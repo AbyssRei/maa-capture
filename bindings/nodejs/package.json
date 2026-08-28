@@ -1,0 +1,20 @@
+{
+  "name": "maa-capture",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "types": "./index.d.ts",
+  "dependencies": {
+    "koffi": "^3.1.6"
+  },
+  "allowScripts": {
+    "koffi@3.1.6": true
+  }
+}
