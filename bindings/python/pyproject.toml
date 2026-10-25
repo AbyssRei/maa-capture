@@ -1,0 +1,35 @@
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[project]
+name = "maa-capture"
+version = "0.2.0"
+description = "Cross-platform screen/window capture binding: Win32 (GDI/DXGI/FramePool/PrintWindow), Linux (PipeWire/Wlr), macOS (ScreenCaptureKit)"
+readme = "README.md"
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+keywords = ["screencap", "screenshot", "capture", "win32", "pipewire", "wayland", "screencapturekit", "maa"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Graphics :: Capture :: Screen Capture",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.22"]
+
+[project.urls]
+Homepage = "https://github.com/AbyssRei/maa-capture"
+Source = "https://github.com/AbyssRei/maa-capture"
+"Canonical Repository" = "https://github.com/AbyssRei/maa-capture"
+
+[tool.uv.build-backend]
+module-name = "maa_capture"

@@ -37,12 +37,15 @@ jobs:
           - os: windows-latest
             platform: windows-x64
             archive_ext: 7z
+            native_path: build/Release/maa-capture.dll
           - os: ubuntu-latest
             platform: linux-x64
             archive_ext: tar.gz
+            native_path: build/libmaa-capture.so
           - os: macos-latest
             platform: macos-arm64
             archive_ext: tar.gz
+            native_path: build/libmaa-capture.dylib
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -139,9 +142,15 @@ jobs:
           }
           Pop-Location
 
-          # Python：ctypes 运行时加载，做语法编译检查
+          # Python：ctypes 运行时加载，做语法编译检查（py_compile 不执行 import，
+          # _win32.py 在非 Windows 平台也可安全编译）
           $python = if ($IsWindows) { 'python' } else { 'python3' }
-          & $python -m py_compile bindings/python/maa_capture.py bindings/python/test_python_binding.py
+          & $python -m py_compile `
+            bindings/python/src/maa_capture/__init__.py `
+            bindings/python/src/maa_capture/_core.py `
+            bindings/python/src/maa_capture/_loader.py `
+            bindings/python/src/maa_capture/_win32.py `
+            bindings/python/tests/test_binding.py
           if ($LASTEXITCODE -ne 0) { throw "Python 绑定语法检查失败：$LASTEXITCODE" }
 
           # NodeJS：npm ci 验证 koffi 在各平台可安装，node --check 做语法检查
@@ -217,10 +226,127 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      - name: 上传原始原生库（供 Python 打包）
+        uses: actions/upload-artifact@v7
+        with:
+          name: maa-capture-native-${{ matrix.platform }}
+          path: ${{ matrix.native_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  python-binding:
+    name: 打包 Python 绑定（PyPI）
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Linux 截图依赖
+        # wheel 内置的 .so 链接 pipewire/wayland，冒烟安装需运行库在场
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libdrm-dev libwayland-dev
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: 下载三平台原生库
+        uses: actions/download-artifact@v8
+        with:
+          pattern: maa-capture-native-*
+          path: native
+          merge-multiple: true
+
+      - name: 组装内置原生库并校验版本
+        run: |
+          $native = 'bindings/python/src/maa_capture/_native'
+          New-Item -ItemType Directory -Force -Path "$native/windows-x64", "$native/linux-x64", "$native/macos-arm64" | Out-Null
+          Move-Item native/maa-capture.dll "$native/windows-x64/" -ErrorAction Stop
+          Move-Item native/libmaa-capture.so "$native/linux-x64/" -ErrorAction Stop
+          Move-Item native/libmaa-capture.dylib "$native/macos-arm64/" -ErrorAction Stop
+
+          $cmakeLists = Get-Content -Raw CMakeLists.txt
+          if ($cmakeLists -notmatch 'project\s*\(\s*maa-capture\s+VERSION\s+(\d+\.\d+\.\d+)') {
+            throw '无法从 CMakeLists.txt 解析项目版本号。'
+          }
+          $cmakeVersion = $Matches[1]
+          $pyproject = Get-Content -Raw bindings/python/pyproject.toml
+          if ($pyproject -notmatch '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"') {
+            throw '无法从 pyproject.toml 解析包版本号。'
+          }
+          $pyVersion = $Matches[1]
+          if ($cmakeVersion -ne $pyVersion) {
+            throw "版本不一致：CMake=$cmakeVersion pyproject=$pyVersion"
+          }
+          Write-Host "版本一致：v$cmakeVersion"
+
+      - name: 构建 sdist 与 wheel
+        run: |
+          uv build bindings/python --out-dir dist-pypi
+
+      - name: 冒烟安装验证
+        run: |
+          uv venv smoke-venv
+          uv pip install --python smoke-venv dist-pypi/maa_capture-*.whl
+          # 导入即加载内置 .so；顺带验证新增 C API 符号（PipeWire/Wlr setter）
+          smoke-venv/bin/python -c @'
+          import maa_capture as m
+          from maa_capture import Manager
+          print("version:", m.__version__)
+          mgr = Manager(methods=Manager.METHOD_NONE)
+          assert mgr.set_pipewire_target(-1, 0)
+          assert mgr.set_wlr_socket(None)
+          del mgr
+          print("smoke OK")
+          '@
+
+      - name: 上传 Python 分发物
+        uses: actions/upload-artifact@v7
+        with:
+          name: maa-capture-pypi-dist
+          path: dist-pypi/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-pypi:
+    name: 发布 PyPI
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: python-binding
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions: {}
+    # secrets 不能直接用于 step 级 if 表达式，经由 job 级 env 间接判断
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - name: 下载 Python 分发物
+        uses: actions/download-artifact@v8
+        with:
+          name: maa-capture-pypi-dist
+          path: dist-pypi
+
+      - name: 未配置 PYPI_API_TOKEN 时提示跳过
+        if: env.PYPI_API_TOKEN == ''
+        run: Write-Warning "未配置 PYPI_API_TOKEN secret，跳过 PyPI 发布（GitHub Release 仍会附带 wheel/sdist）。"
+
+      - name: 发布到 PyPI
+        if: env.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
   release:
     name: 发布 GitHub Release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, python-binding]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -232,6 +358,12 @@ jobs:
           path: dist
           # 三个平台的产物直接合并到 dist/ 根（各 artifact 内是单个压缩包）
           merge-multiple: true
+
+      - name: 下载 Python 分发物
+        uses: actions/download-artifact@v8
+        with:
+          name: maa-capture-pypi-dist
+          path: dist-pypi
 
       - name: 校验发布包齐全
         run: |
@@ -249,9 +381,14 @@ jobs:
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          # 注意：dist/ 是合并下载目录（含 Python 分发物），平台压缩包必须用
+          # maa-capture-v* 前缀限定，避免 sdist 被 dist/ 与 dist-pypi/
+          # 两个 glob 重复匹配上传
           files: |
             dist/*.7z
-            dist/*.tar.gz
+            dist/maa-capture-v*.tar.gz
+            dist-pypi/*.whl
+            dist-pypi/*.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

@@ -30,10 +30,11 @@
 ### Python（ctypes）
 
 ```bash
-# 需要 Python 3（可用 uv 管理：uv python install 3.13 --default）
-uv run --with numpy python bindings/python/test_python_binding.py [dll目录]
-# 或直接用 python 解释器：
-python bindings/python/test_python_binding.py [dll目录]
+# 安装随 wheel 分发三平台原生库的绑定包
+pip install maa-capture        # 或本地：pip install -e bindings/python
+
+# 运行自测（真实截图，需桌面会话）
+python bindings/python/tests/test_binding.py [原生库目录]
 ```
 
 ### NodeJS（koffi）

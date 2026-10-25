@@ -1,116 +1,18 @@
-"""
-maa-capture —— Python 绑定（ctypes，零编译依赖）
+"""ctypes 绑定主体：ImageBuffer / ScreencapCallbacks / Manager。
 
-对应 MaaFramework 的 Python 绑定角色，封装两个外部扩展接口：
-  1. CustomScreencapCallbacks —— 外部回调实现截图（对应 MaaCustomControllerCallbacks::screencap）
-  2. Manager                    —— 内置 6 种 Win32 截图方式的测速选择 + 外部单元注册
-
-用法：
-    from maa_capture import Manager, ScreencapCallbacks, ImageBuffer
-
-    # 方式一：外部回调实现截图
-    def my_screencap(arg, out: ImageBuffer) -> int:
-        # 把像素写入 out（BGRA/BGR），返回 1
-        ...
-    cb = ScreencapCallbacks(screencap=my_screencap, trans_arg=None)
-    mgr = Manager(hwnd=None, methods=Manager.METHOD_NONE)
-    mgr.register_custom_unit("my-unit", cb)
-    mgr.connect()
-    img = mgr.screencap()   # (width, height, channels, step, buffer)
-    print(mgr.selected_unit_name())
-
-    # 方式二：内置方式（需要窗口句柄）
-    hwnd = find_window_by_title("记事本")  # 需自行用 ctypes 调 FindWindowW
-    mgr = Manager(hwnd=hwnd, methods=Manager.METHOD_ALL)
-    mgr.connect()
-    img = mgr.screencap()
-
-依赖：仅标准库 ctypes；可选 numpy（将 buffer 转为 numpy 数组）。
+对应纯 C 头 ``MaaWSCustomScreencap.h`` 的 Manager C API（跨平台）：
+  - Windows：GDI / ScreenDC / PrintWindow / DXGI×2 / FramePool
+  - Linux  ：PipeWire / Wlr（目标经 set_pipewire_target / set_wlr_socket 配置）
+  - macOS  ：ScreenCaptureKit（hwnd 传 None 即 CGWindowID 0 = 整个主显示器）
 """
 
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes as wt
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
-__all__ = [
-    "ImageBuffer",
-    "ScreencapCallbacks",
-    "Manager",
-    "MaaWSBool",
-    "dll_path",
-    "set_dll_path",
-]
-
-# ---------------------------------------------------------------------------
-# 加载动态库
-# ---------------------------------------------------------------------------
-
-_dll: Optional[ctypes.CDLL] = None
-_dll_search_path: Optional[str] = None
-
-
-def set_dll_path(path: str) -> None:
-    """设置 maa-capture.dll 所在目录（可选，便于从自定义路径加载）。"""
-    global _dll_search_path, _dll
-    _dll_search_path = path
-    _dll = None  # 强制下次重新加载
-
-
-def dll_path() -> Optional[str]:
-    return _dll_search_path
-
-
-def _default_search_paths():
-    import os
-
-    here = os.path.dirname(os.path.abspath(__file__))
-    return [
-        os.path.join(here, "..", "build", "Release"),
-        os.path.join(here, "..", "dist", "bin"),
-        os.environ.get("MAA_WS_DLL_DIR", ""),
-    ]
-
-
-def _load_dll() -> ctypes.CDLL:
-    global _dll
-    if _dll is not None:
-        return _dll
-
-    import os
-
-    candidates = []
-    if _dll_search_path:
-        candidates.append(os.path.join(_dll_search_path, "maa-capture.dll"))
-    for base in _default_search_paths():
-        if base:
-            candidates.append(os.path.join(base, "maa-capture.dll"))
-
-    errors = []
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                _dll = ctypes.CDLL(path)
-                return _dll
-            except OSError as e:  # pragma: no cover
-                errors.append(f"{path}: {e}")
-        else:
-            errors.append(f"{path}: not found")
-
-    # 兜底：依赖系统 PATH
-    try:
-        _dll = ctypes.CDLL("maa-capture.dll")
-        return _dll
-    except OSError as e:  # pragma: no cover
-        errors.append(f"system PATH: {e}")
-
-    raise RuntimeError(
-        "无法加载 maa-capture.dll。请用 set_dll_path() 指定目录，"
-        "或把 DLL 放入 PATH。错误详情:\n" + "\n".join(errors)
-    )
-
+from . import _loader
 
 # ---------------------------------------------------------------------------
 # 数据类型（与 MaaWSCustomScreencap.h 对齐）
@@ -138,11 +40,11 @@ class ImageBuffer(ctypes.Structure):
         return ctypes.string_at(self.data, row * self.height)
 
     def to_numpy(self):
-        """转换为 numpy 数组（BnRGB/BGR）。需已安装 numpy。"""
+        """转换为 numpy 数组（BGR）。需已安装 numpy（extras：pip install maa-capture[numpy]）。"""
         import numpy as np
 
         arr = np.frombuffer(self.to_bytes(), dtype=np.uint8)
-        return arr.reshape(self.height, self.step, )[:, : self.width * self.channels].reshape(
+        return arr.reshape(self.height, self.step)[:, : self.width * self.channels].reshape(
             self.height, self.width, self.channels
         )
 
@@ -198,10 +100,6 @@ class ScreencapCallbacks:
         wrapper._user_fn = user_fn  # 保活引用（防 GC 释放用户函数）
         return wrapper
 
-    @property
-    def _as_param_(self):
-        return 1  # 兼容旧接口占位；实际走 _ctor
-
     def _ctor(self) -> ctypes.Structure:
         class Struct(ctypes.Structure):
             _fields_ = [
@@ -220,7 +118,13 @@ class ScreencapCallbacks:
 
 
 class Manager:
-    """截图管理器（MaaWSManager*）。"""
+    """截图管理器（MaaWSManager*）：内置方式测速选择 + 外部回调单元注册。
+
+    hwnd 的平台语义：
+      - Windows：目标窗口 HWND（int）；为 None 时仅 DXGI_DesktopDup 可用（主显示器整屏）
+      - Linux  ：忽略；PipeWire / Wlr 目标经 set_pipewire_target / set_wlr_socket 配置
+      - macOS  ：目标窗口 CGWindowID；None 即 0 = 整个主显示器
+    """
 
     # 截图方式位掩码（与 C 头文件常数一致）
     METHOD_NONE = 0
@@ -230,20 +134,39 @@ class Manager:
     METHOD_DXGI_DESKTOP_DUP_WINDOW = 1 << 3
     METHOD_PRINTWINDOW = 1 << 4
     METHOD_SCREENDC = 1 << 5
+    METHOD_PIPEWIRE = 1 << 6 # Linux
+    METHOD_WLR = 1 << 7 # Linux
+    METHOD_SCREENCAPTUREKIT = 1 << 8 # macOS
     METHOD_ALL = (1 << 64) - 1
     METHOD_FOREGROUND = METHOD_DXGI_DESKTOP_DUP_WINDOW | METHOD_SCREENDC
     METHOD_BACKGROUND = METHOD_FRAMEPOOL | METHOD_PRINTWINDOW
 
     def __init__(self, hwnd: Optional[int] = None, methods: int = METHOD_ALL):
         """
-        hwnd: 目标窗口句柄（int，即 HWND）。为 None 时内置前台方式不可用。
-        methods: 参与测速的内置方式位掩码。
+        hwnd: 平台相关目标（见类文档）。为 None 时按平台回退（Windows/Linux 语义见上）。
+        methods: 参与测速的内置方式位掩码；只使用自定义单元时传 METHOD_NONE。
         """
-        dll = _load_dll()
+        dll = _loader.load()
+        self._setup_prototypes(dll)
+
+        self._dll = dll
+        self._handle = dll.MaaWSManagerCreate(hwnd or 0, methods)
+        if not self._handle:
+            raise RuntimeError("MaaWSManagerCreate failed")
+
+        self._callbacks: list[ScreencapCallbacks] = []  # 持有回调对象引用，防 GC
+        self._native_structs: list = []  # 持有回调结构体内存，C 侧保存了其指针
+
+    @staticmethod
+    def _setup_prototypes(dll: ctypes.CDLL) -> None:
         dll.MaaWSManagerCreate.restype = ctypes.c_void_p
         dll.MaaWSManagerCreate.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
         dll.MaaWSManagerDestroy.restype = None
         dll.MaaWSManagerDestroy.argtypes = [ctypes.c_void_p]
+        dll.MaaWSManagerSetPipeWireTarget.restype = MaaWSBool
+        dll.MaaWSManagerSetPipeWireTarget.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_uint32]
+        dll.MaaWSManagerSetWlrSocket.restype = MaaWSBool
+        dll.MaaWSManagerSetWlrSocket.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         dll.MaaWSManagerRegisterCustomUnit.restype = MaaWSBool
         dll.MaaWSManagerRegisterCustomUnit.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -257,13 +180,22 @@ class Manager:
         dll.MaaWSManagerInactive.restype = None
         dll.MaaWSManagerInactive.argtypes = [ctypes.c_void_p]
 
-        self._dll = dll
-        self._handle = dll.MaaWSManagerCreate(hwnd or 0, methods)
-        if not self._handle:
-            raise RuntimeError("MaaWSManagerCreate failed")
+    # ---- Linux 截图目标配置（connect() 前调用；其他平台为 no-op）----
 
-        self._callbacks: list[ScreencapCallbacks] = []  # 持有回调对象引用，防 GC
-        self._native_structs: list = []  # 持有回调结构体内存，C 侧保存了其指针
+    def set_pipewire_target(self, fd: int = -1, node_id: int = 0) -> bool:
+        """设置 PipeWire 目标：fd >= 0 时走 portal fd（连接后 fd 归库所有），
+        否则连接会话 daemon。两者都未指定时 PipeWire 单元不参与构建。"""
+        return bool(self._dll.MaaWSManagerSetPipeWireTarget(self._handle, fd, node_id))
+
+    def set_wlr_socket(self, socket_name: Optional[str] = None) -> bool:
+        """设置 wlr-screencopy 的 Wayland socket 名；None/空串 = WAYLAND_DISPLAY 默认值。"""
+        return bool(
+            self._dll.MaaWSManagerSetWlrSocket(
+                self._handle, socket_name.encode("utf-8") if socket_name else None
+            )
+        )
+
+    # ---- 通用接口 ----
 
     def register_custom_unit(self, name: str, callbacks: ScreencapCallbacks) -> bool:
         """注册外部自定义截图单元（C 回调实现）。"""
@@ -284,7 +216,7 @@ class Manager:
         return bool(self._dll.MaaWSManagerConnect(self._handle))
 
     def screencap(self) -> Optional[ImageBuffer.Info]:
-        """截图一次。成功返回 (width, height, channels, step, data) 容器，失败返回 None。"""
+        """截图一次。成功返回 ImageBuffer.Info（width/height/channels/step/data），失败返回 None。"""
         buf = ImageBuffer()
         if not self._dll.MaaWSManagerScreencap(self._handle, ctypes.byref(buf)):
             return None
@@ -310,32 +242,3 @@ class Manager:
             except Exception:
                 pass
             self._handle = None
-
-
-# ---------------------------------------------------------------------------
-# 工具：按窗口标题找 HWND（Windows）
-# ---------------------------------------------------------------------------
-
-def find_window_by_title(title: str) -> Optional[int]:
-    """按窗口标题查找顶层窗口句柄（不区分大小写，模糊匹配）。"""
-    _user32 = ctypes.windll.user32
-
-    results = []
-
-    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
-    def enum_proc(hwnd, lparam):
-        length = _user32.GetWindowTextLengthW(hwnd)
-        if length > 0:
-            buf = ctypes.create_unicode_buffer(length + 1)
-            _user32.GetWindowTextW(hwnd, buf, length + 1)
-            if title.lower() in buf.value.lower():
-                results.append(hwnd)
-        return True
-
-    _user32.EnumWindows(enum_proc, 0)
-    return results[0] if results else None
-
-
-def foreground_window() -> Optional[int]:
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    return int(hwnd) if hwnd else None

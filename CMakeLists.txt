@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(maa-capture
-    VERSION 0.1.2
+    VERSION 0.2.0
     DESCRIPTION "Standalone cross-platform screencap library extracted from MaaFramework"
     LANGUAGES C CXX)
 

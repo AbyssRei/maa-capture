@@ -1,26 +1,20 @@
 """maa-capture Python 绑定自测。
 
-用法：
-    python test_python_binding.py [dll目录]
+用法（需先安装包，例如 ``pip install -e bindings/python`` 或安装 wheel）：
+    python tests/test_binding.py [原生库目录]
 
 覆盖：
   1. 外部回调接口：ScreencapCallbacks 自定义单元注册进 Manager，测速选中并截图
-  2. Manager 内置方式：以当前前台窗口为句柄（若存在桌面/窗口），
-     预期可能因无窗口而失败——此时跳过而非失败
+  2. Manager 内置方式：真实截图一次（无可用桌面/窗口的环境自动跳过）
 """
 
+from __future__ import annotations
+
+import ctypes
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from maa_capture import (  # noqa: E402
-    ImageBuffer,
-    Manager,
-    ScreencapCallbacks,
-    foreground_window,
-    set_dll_path,
-)
+from maa_capture import ImageBuffer, Manager, ScreencapCallbacks, set_lib_path
 
 
 def make_gradient(width=8, height=6):
@@ -52,8 +46,6 @@ def test_custom_callback():
         out.step = holder["w"] * 4
         return 1
 
-    import ctypes
-
     cb = ScreencapCallbacks(screencap=on_screencap)
     mgr = Manager(hwnd=None, methods=Manager.METHOD_NONE)
     assert mgr.register_custom_unit("python-gradient", cb), "register_custom_unit failed"
@@ -70,20 +62,25 @@ def test_custom_callback():
     del mgr
     print("[PASS] custom callback unit")
 
-    # 通过顶层 C API 直接使用（MaaWSCustomScreencapCreate 路径为 C++ 桥接内部，此处验证 Manager 即可）
     return True
 
 
 def test_manager_builtin():
-    """内置方式：以当前前台窗口为句柄做一次真实截图（无窗口则跳过）。"""
-    hwnd = foreground_window()
-    if not hwnd:
-        print("[SKIP] no foreground window (headless)")
-        return True
+    """内置方式：真实截图一次（无可用桌面/输出则跳过）。"""
+    if sys.platform == "win32":
+        from maa_capture import foreground_window
 
-    mgr = Manager(hwnd=int(hwnd), methods=Manager.METHOD_ALL)
+        hwnd = foreground_window()
+        if not hwnd:
+            print("[SKIP] no foreground window (headless)")
+            return True
+        mgr = Manager(hwnd=int(hwnd), methods=Manager.METHOD_ALL)
+    else:
+        # Linux/macOS：hwnd 语义由平台解释（整屏/输出），CI 无桌面环境则 connect 失败跳过
+        mgr = Manager(hwnd=None, methods=Manager.METHOD_ALL)
+
     if not mgr.connect():
-        print("[SKIP] no builtin screencap method works on this window")
+        print("[SKIP] no builtin screencap method works in this environment")
         return True
 
     info = mgr.screencap()
@@ -97,7 +94,7 @@ def test_manager_builtin():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        set_dll_path(sys.argv[1])
+        set_lib_path(sys.argv[1])
     test_custom_callback()
     test_manager_builtin()
     print("ALL PASS")
