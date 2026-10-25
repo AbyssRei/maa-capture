@@ -29,8 +29,11 @@ MWS_NS_BEGIN
 ScreencapMethod available_builtin_methods()
 {
 #if defined(_WIN32)
-    return Method_GDI | Method_FramePool | Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window | Method_PrintWindow
-           | Method_ScreenDC;
+    ScreencapMethod methods = Method_GDI | Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window | Method_PrintWindow | Method_ScreenDC;
+#if MWS_FRAMEPOOL_AVAILABLE
+    methods |= Method_FramePool;
+#endif
+    return methods;
 #elif defined(__APPLE__)
     return Method_ScreenCaptureKit;
 #else
@@ -133,27 +136,28 @@ std::optional<ScreencapMgr::MonitorInfo> ScreencapMgr::monitor_info(std::size_t 
 
 void ScreencapMgr::build_builtin_units()
 {
-    const auto add = [&](ScreencapMethod flag, const char* name, std::shared_ptr<ScreencapBase> unit) {
-        if (builtin_methods_ & flag) {
-            units_[name] = UnitEntry { name, std::move(unit) };
+    const auto enabled_methods = builtin_methods_ & available_builtin_methods();
+    const auto add = [&](ScreencapMethod flag, const char* name, auto&& create_unit) {
+        if (enabled_methods & flag) {
+            units_[name] = UnitEntry { name, create_unit() };
             LogDebug << "Builtin unit added" << VAR(name);
         }
     };
 
 #if defined(_WIN32)
     const HWND hwnd = static_cast<HWND>(hwnd_);
-    add(Method_GDI, "GDI", std::make_shared<GdiScreencap>(hwnd));
-    add(Method_FramePool, "FramePool", std::make_shared<FramePoolWithPseudoMinimizeScreencap>(hwnd));
+    add(Method_GDI, "GDI", [&] { return std::make_shared<GdiScreencap>(hwnd); });
+    add(Method_FramePool, "FramePool", [&] { return std::make_shared<FramePoolWithPseudoMinimizeScreencap>(hwnd); });
     // 整屏单元：显式显示器索引优先于 hwnd 定位（monitor_index_ < 0 时按原行为）
-    add(Method_DXGI_DesktopDup, "DXGI_DesktopDup", std::make_shared<DesktopDupScreencap>(hwnd, monitor_index_));
-    add(Method_DXGI_DesktopDup_Window, "DXGI_DesktopDup_Window", std::make_shared<DesktopDupWindowScreencap>(hwnd));
-    add(Method_PrintWindow, "PrintWindow", std::make_shared<PrintWindowWithPseudoMinimizeScreencap>(hwnd));
-    add(Method_ScreenDC, "ScreenDC", std::make_shared<ScreenDCScreencap>(hwnd));
+    add(Method_DXGI_DesktopDup, "DXGI_DesktopDup", [&] { return std::make_shared<DesktopDupScreencap>(hwnd, monitor_index_); });
+    add(Method_DXGI_DesktopDup_Window, "DXGI_DesktopDup_Window", [&] { return std::make_shared<DesktopDupWindowScreencap>(hwnd); });
+    add(Method_PrintWindow, "PrintWindow", [&] { return std::make_shared<PrintWindowWithPseudoMinimizeScreencap>(hwnd); });
+    add(Method_ScreenDC, "ScreenDC", [&] { return std::make_shared<ScreenDCScreencap>(hwnd); });
 #elif defined(__APPLE__)
     // hwnd_ 携带 CGWindowID（非 0 = 按窗口截取）；为 0 时整屏，可用显示器索引选择
     const auto window_id = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(hwnd_));
     const auto display_index = monitor_index_ >= 0 ? static_cast<std::uint32_t>(monitor_index_) : 0;
-    add(Method_ScreenCaptureKit, "ScreenCaptureKit", std::make_shared<ScreenCaptureKitScreencap>(window_id, display_index));
+    add(Method_ScreenCaptureKit, "ScreenCaptureKit", [&] { return std::make_shared<ScreenCaptureKitScreencap>(window_id, display_index); });
 #else
     // Linux：单元按编译期可用性注册（依赖缺失时 CMake 已裁剪对应源文件）
 #if MWS_PIPEWIRE_AVAILABLE
@@ -164,7 +168,7 @@ void ScreencapMgr::build_builtin_units()
         }
         else {
             // 位掩码已在外层判断过，传 Method_All 保证 add 无条件注册
-            add(Method_All, "PipeWire", std::make_shared<PipeWireScreencap>(pipewire_fd_, pipewire_node_id_));
+            add(Method_All, "PipeWire", [&] { return std::make_shared<PipeWireScreencap>(pipewire_fd_, pipewire_node_id_); });
         }
     }
 #endif
@@ -174,7 +178,7 @@ void ScreencapMgr::build_builtin_units()
         if (client->connect(wlr_socket_)) {
             // 显示器索引：合成器广播 wl_output 的顺序（默认 0）
             const auto output_index = static_cast<std::size_t>(std::max(0, monitor_index_));
-            add(Method_All, "Wlr", std::make_shared<WlrScreencap>(std::move(client), output_index));
+            add(Method_All, "Wlr", [&] { return std::make_shared<WlrScreencap>(std::move(client), output_index); });
         }
         else {
             LogWarn << "Failed to connect Wayland socket, skipping Wlr unit" << VAR(wlr_socket_);
@@ -247,6 +251,12 @@ std::shared_ptr<ScreencapBase> ScreencapMgr::speed_test()
         return nullptr;
     }
 
+    // Pause unused producers and restore their temporary window state after probing.
+    for (auto& [name, entry] : units_) {
+        if (entry.unit != fastest) {
+            entry.unit->inactive();
+        }
+    }
     LogInfo << "The fastest method is" << VAR(fastest_name) << VAR(cost);
     selected_unit_name_ = fastest_name;
     return fastest;

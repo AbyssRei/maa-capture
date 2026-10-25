@@ -22,6 +22,11 @@ FramePoolScreencap::~FramePoolScreencap()
     uninit();
 }
 
+void FramePoolScreencap::inactive()
+{
+    uninit();
+}
+
 std::optional<Image> FramePoolScreencap::screencap()
 {
     if (!hwnd_) {

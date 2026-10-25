@@ -18,7 +18,6 @@ public:
         : inner_(hwnd)
         , helper_(hwnd)
     {
-        helper_.start();
     }
 
     virtual ~FramePoolWithPseudoMinimizeScreencap() override = default;
@@ -26,18 +25,16 @@ public:
 public: // from ScreencapBase
     virtual std::optional<Image> screencap() override
     {
+        helper_.start();
         helper_.ensure_not_minimized();
         return inner_.screencap();
     }
 
     virtual void inactive() override
     {
-        // revert_pseudo_minimize() 只恢复扩展样式与不透明度，不会把窗口收回最小化状态。
-        // 这里恢复后窗口将完整显示出来，用户原本的最小化意图会丢失，
-        // stop() 中为此额外补了一次 ShowWindow(SW_MINIMIZE)
-        if (helper_.is_pseudo_minimized()) {
-            helper_.revert_pseudo_minimize();
-        }
+        // Stop monitoring and restore both window attributes and minimization intent.
+        inner_.inactive();
+        helper_.stop();
     }
 
 private:

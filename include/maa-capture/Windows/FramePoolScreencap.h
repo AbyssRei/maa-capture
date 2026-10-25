@@ -22,11 +22,11 @@
 
 #include "maa-capture/Common.h"
 #include "maa-capture/ScreencapBase.h"
+#include "SafeWindows.hpp"
 
 #if MWS_FRAMEPOOL_AVAILABLE
 
 #include "SafeDXGI.hpp"
-#include "SafeWindows.hpp"
 
 #include <winrt/Windows.Graphics.Capture.h>
 
@@ -44,6 +44,7 @@ public:
 
 public: // from ScreencapBase
     virtual std::optional<Image> screencap() override;
+    void inactive() override;
 
 private:
     bool init();
