@@ -56,3 +56,26 @@ CMake、Python 包元数据和 `__version__`、Node.js、Rust、C# 版本必须�
 两次窗口修复；其余构建修复按所属功能合并。原作者信息保留，新历史从根提交起
 统一采用新项目名称。新项目独立重新编号；重写前的历史和发行资产需先备份。
 历史标签导入时暂时关闭工作流，避免为历史版本重复发布。
+
+## PyPI 令牌与重建仓库
+
+在 GitHub 的 Settings → Secrets and variables → Actions 新建仓库 Secret，名称为
+`PYPI_API_TOKEN`，值为包含 `pypi-` 前缀的完整正式 PyPI 令牌。不要写入源码、提交消息或命令参数。
+也可以执行 `gh secret set PYPI_API_TOKEN --repo AbyssRei/maa-capture`，在交互提示中输入。
+工作流的发布 job 使用 `pypi` environment，可读取仓库 Secret。
+
+删除并重建 GitHub 仓库会删除原有 Secrets。先创建新仓库，重新配置 Secret 并确认存在，
+再单独推送正式版本标签。历史标签导入期间临时关闭构建工作流，恢复后只推正式发布标签。
+原仓库中的代码改动应先通过完整 CI，再创建新仓库；代码优化后需要重新验证。
+
+PyPI 不允许复用曾上传过的发行文件名，即使删除整个项目也一样。更新同名包应使用新版本，
+只改变大小写或 `-` / `_` / `.` 不会形成不同的标准化包名。详见
+[PyPI 文件名规则](https://docs.pypi.org/publishing/troubleshooting/)和
+[名称规范化](https://packaging.python.org/en/latest/specifications/name-normalization/)。
+
+## 发布验证范围
+
+发布前必须通过三平台原生回归、安装后 `find_package` 消费测试、绑定检查、Python wheel/sdist
+元数据及长描述链接检查、内置原生库检查和五个发布资产检查。Linux/macOS 测试直接在 GitHub
+Actions 对应 runner 执行。正式发布后从官方 PyPI 源安装，核对包名、版本、仓库链接、文件摘要
+及原生回调。发布包中的名称、说明、原生库加载名和主仓库链接必须一致。

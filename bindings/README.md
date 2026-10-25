@@ -1,92 +1,73 @@
-# maa-capture —— 多语言绑定
+# maa-capture 多语言绑定
 
-对应 MaaFramework（`docs/zh_cn/2.1-集成文档.md`）所列语言的 **Win32 截图功能** 绑定。
-所有绑定都封装同一套 C ABI（`include/maa-capture/MaaWSCustomScreencap.h`），
-提供两套「截图功能外部扩展接口」：
+主仓库：[AbyssRei/maa-capture](https://github.com/AbyssRei/maa-capture)。所有绑定围绕同一套 C ABI，提供截图管理器和外部回调；不等于 MaaFramework 的完整控制器或任务接口。
 
-1. **外部回调接口** —— 对应 `MaaCustomControllerCallbacks::screencap`：
-   你用自己的语言实现截图回调，注册进统一测速选择器
-2. **截图管理器** —— 内置 6 种 Win32 截图方式（GDI / FramePool / DXGI_DesktopDup /
-   DXGI_DesktopDup_Window / PrintWindow / ScreenDC）自动预热+实测测速，选最快方式截图
+## 能力与验证范围
 
-## 状态总览
-
-| 语言 | 目录 | 机制 | 验证状态 |
+| 语言 | 机制 | 当前范围 | CI 验证 |
 |---|---|---|---|
-| C | 项目根 `sample/external_c_*.c` | 纯 C | ✅ 编译+运行通过 |
-| C++ | 项目根（头文件+示例） | 原生头文件 | ✅ 编译+运行通过 |
-| Python | `bindings/python` | ctypes（零编译） | ✅ 运行通过（内置+回调） |
-| NodeJS | `bindings/nodejs` | koffi FFI（零 node-gyp） | ✅ 编译+运行通过（内置+回调） |
-| C# | `bindings/csharp` | P/Invoke | ✅ dotnet 编译+运行通过（内置+回调） |
-| Golang | `bindings/golang` | syscall（零 cgo）+ cgo 可选 | ✅ 两条路径均运行通过 |
-| Java | `bindings/java` | JNA（零 JNI 编译） | ✅ javac 编译+运行通过（内置+回调） |
-| Rust | `bindings/rust` | extern "C" + 安全包装 | ✅ cargo 编译+运行通过（内置+回调） |
+| C / C++ | 原生 ABI / 扩展类 | 三平台管理器及后端 | 三平台编译、原生回归、安装后消费 |
+| Python | ctypes | 三平台、来源配置、显示器查询、上下文管理 | 三平台语法、运行时回调/查询、wheel 安装 |
+| Node.js | Koffi | Windows 管理器、回调、窗口辅助 | 三平台依赖安装和语法；窗口辅助依赖 user32 |
+| C# | P/Invoke | 基础管理器、回调、Windows 窗口辅助 | 三平台编译，示例以 Windows 为主 |
+| Go | syscall / 可选 cgo | Windows；cgo 用于自定义回调 | Windows 目标编译，非 Windows runner 做交叉编译 |
+| Java | JNA | 基础管理器、回调、Windows 窗口辅助 | 三平台编译，示例以 Windows 为主 |
+| Rust | extern C | 当前绑定及示例依赖 user32，面向 Windows | 三平台类型检查、Windows 原生链接 |
 
-> C 与 C++ 的完整示例在项目根 `sample/`（`external_c_only.c` / `external_c_manager.c` /
-> `external_c_callback.cpp` / `external_cpp_interface.cpp`），随 CMake `MWS_BUILD_SAMPLES` 构建。
+Python 目前提供完整的平台来源和查询辅助 API。其他绑定未全部封装新增方法；不要把“语法/编译通过”视为全部平台 GUI 功能已运行通过。CI 不要求 Linux/macOS runner 有可授权的桌面会话。
 
 ## 各语言快速开始
 
-### Python（ctypes）
+Python 的安装和平台示例见 [Python README](python/README.md)。Windows Node.js：
 
-```bash
-# 安装随 wheel 分发三平台原生库的绑定包
-pip install maa-capture        # 或本地：pip install -e bindings/python
-
-# 运行自测（真实截图，需桌面会话）
-python bindings/python/tests/test_binding.py [原生库目录]
+```powershell
+cd bindings/nodejs
+npm install --no-package-lock
+$env:MAA_WS_DLL_DIR = 'C:/path/to/sdk/bin'
+node test.js
 ```
 
-### NodeJS（koffi）
+C#：先把 SDK 的 bin 加入 PATH，然后执行：
 
-```bash
-cd bindings/nodejs && npm i koffi
-node test.js [dll目录]
+```powershell
+dotnet run --project bindings/csharp/test --configuration Release
 ```
 
-### C#（P/Invoke）
+Go（Windows）：
 
-```bash
-cd bindings/csharp && dotnet run --project test
-（把 build/Release 加入 PATH 或复制 DLL）
+```powershell
+cd bindings/golang
+go mod init maa_capture  # 仅首次执行；当前示例使用本地模块名
+$env:CGO_ENABLED = '0'
+go run ./test
 ```
 
-### Go（双路径）
+自定义 Go 回调需 `CGO_ENABLED=1` 和匹配架构的 C 编译器，见 `custom_cgo.go`。CI 当前只验证纯 Go 路径。
 
-```bash
-# 纯 Go（内置方式）
-cd bindings/golang && go run ./test
-# cgo（自定义回调，需要 MinGW gcc）
-CGO_ENABLED=1 CC=gcc go run ./test
-```
+Java：在 `bindings/java` 中执行：
 
-### Java（JNA）
-
-```bash
-# 在 bindings/java 中执行，自动解析 Maven Central 最新稳定版 JNA
-pwsh ./fetch-jna.ps1
+```powershell
+./fetch-jna.ps1
 javac -encoding UTF-8 -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
 java --enable-native-access=ALL-UNNAMED -Djna.library.path=../../build/Release -cp "build-classes;.deps/jna.jar" maa.capture.Sample
 ```
 
-### Rust
+PowerShell 脚本从 Maven Central 解析最新稳定 JNA。Java classpath 在 Linux/macOS 使用 `:` 分隔；示例中的窗口辅助仅用于 Windows。
 
-```bash
-cd bindings/rust
-LIB=../../build/Release cargo build --example demo
-PATH=../../build/Release:$PATH cargo run --example demo
+Rust（Windows，导入库和 DLL 路径均需配置）：
+
+```powershell
+$env:LIB = 'C:/path/to/sdk/lib;' + $env:LIB
+$env:PATH = 'C:/path/to/sdk/bin;' + $env:PATH
+cargo run --manifest-path bindings/rust/Cargo.toml --example demo
 ```
 
-## C ABI 稳定性
+C / C++ 示例位于 [sample](../sample/)，随 `MWS_BUILD_SAMPLES` 构建。安装后的标准 CMake 接入见[构建文档](../docs/BUILDING.md)。
 
-所有语言绑定只依赖 3 组稳定导出：
+## 生命周期与输出
 
-- `MaaWSCustomScreencapCreate/Destroy/Screencap` —— 外部回调句柄
-- `MaaWSManagerCreate/Destroy/Connect/Screencap/SelectedUnitName/Inactive` —— 截图管理器
-- `MaaWSManagerRegisterCustomUnit` —— 把「外部回调实现」注册进测速选择器
+C ABI 返回 BGR 图像指针，由原生句柄持有；需要保留时复制。回调结构体、函数及像素缓冲必须保持有效，不能在原生调用结束前回收。
 
-加上 `MaaWSImageBuffer`（BGR 归一化输出）与 `MaaWSCustomScreencapCallbacks` 两个布局稳定的结构体，
-以及 `MaaWSMethod` 位掩码常数。语言侧改动不涉及 C++ 层。
+Python 使用 `with` / `close()`；C# 使用 `Dispose()` / `using`；Java 使用 `close()` / try-with-resources；Rust 通过 Drop 释放。Go / Node.js 使用各绑定的显式销毁方法，结束前按需调用停用接口。
 
-> 注意：截图输出统一归一化为 **BGR 三通道**（与 MaaFramework 内部约定一致），
-> 即使回调写入 4 通道 BGRA 也会在桥接层完成 BGRA→BGR。
+同一管理器操作需串行化，窗口句柄的含义随平台变化。详见[集成及所有权](../docs/INTEGRATION.md)、[平台限制](../docs/SCREEN_CAPTURE.md)和[故障排查](../docs/TROUBLESHOOTING.md)。

@@ -7,6 +7,10 @@
 ## 1.0.0
 
 - 项目与仓库统一命名为 `maa-capture`；Python / Rust / Go 模块名为 `maa_capture`，Java 包为 `maa.capture`。
+- CMake 选项限定于目标，新增可重定位的安装包配置和安装后消费验证。
+- 截图候选按需构造，未选中来源停用；修正 FramePool 关闭配置及伪最小化清理。
+- Python 提供显式 close 与上下文管理，补充生命周期回归。
+- 扩充平台、构建、集成、故障排查及发布文档。
 - Windows 专用源码与头文件移入对应的 `Windows/` 子目录，公共接口保留在顶层。
 - 修正 Python 包正文中的主仓库链接，CI 同时验证 wheel / sdist 的元数据与 README。
 
