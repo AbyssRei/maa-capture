@@ -146,6 +146,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Python 运行时绑定验证失败' }
           Remove-Item Env:PYTHONPATH
 
+      - name: 原生回归与安装后消费验证
+        run: |
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw '原生 C API 回归失败' }
+          $prefix = Join-Path $env:RUNNER_TEMP 'maa-capture-install'
+          cmake --install build --config Release --prefix $prefix
+          if ($LASTEXITCODE -ne 0) { throw 'CMake 安装失败' }
+          $extra = if ($IsWindows) { @('-A', 'x64') } else { @() }
+          cmake -S tests/install-consumer -B build-consumer "-DCMAKE_PREFIX_PATH=$prefix" @extra
+          if ($LASTEXITCODE -ne 0) { throw '安装后 find_package 失败' }
+          cmake --build build-consumer --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw '安装后消费者编译失败' }
+          if ($IsWindows) { $env:PATH = "$prefix/bin;$env:PATH" }
+          $consumer = if ($IsWindows) { './build-consumer/Release/maa_capture_consumer.exe' } else { './build-consumer/maa_capture_consumer' }
+          & $consumer
+          if ($LASTEXITCODE -ne 0) { throw '安装后消费者运行失败' }
+
+      - name: 验证 FramePool 禁用配置
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S . -B build-no-framepool -A x64 -DMWS_ENABLE_FRAMEPOOL=OFF -DMWS_BUILD_SAMPLES=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用配置失败' }
+          cmake --build build-no-framepool --config Release --target maa_capture_native_smoke --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用构建失败' }
+          ctest --test-dir build-no-framepool -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用行为不一致' }
+
       - name: 绑定编译检查（Go / Rust / Python / NodeJS / Java / C#）
         run: |
           $ErrorActionPreference = 'Stop'
@@ -170,7 +197,7 @@ jobs:
           cargo check --locked --examples
           if ($LASTEXITCODE -ne 0) { throw "Rust 绑定检查失败：$LASTEXITCODE" }
           if ($IsWindows) {
-            $env:LIB = (Resolve-Path '../../build/Release').Path
+            $env:LIB = (Resolve-Path '../../build/Release').Path + ';' + $env:LIB
             cargo build --locked --example demo
             if ($LASTEXITCODE -ne 0) { throw "Rust 绑定链接失败：$LASTEXITCODE" }
           }
@@ -234,7 +261,10 @@ jobs:
           }
 
           # 源码树取自 git 跟踪文件的干净快照，避免把 CI 过程产物打进包里
-          git archive HEAD include bindings sample README.md LICENSE CHANGELOG.md | tar -xf - -C $staging
+          cmake --install build --config Release --prefix (Join-Path (Get-Location) $staging)
+          if ($LASTEXITCODE -ne 0) { throw '安装发布 SDK 失败' }
+          git archive HEAD bindings sample docs README.md LICENSE CHANGELOG.md | tar -xf - -C $staging
+          if ($LASTEXITCODE -ne 0) { throw '发布文档快照失败' }
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           if ($IsWindows) {
@@ -328,7 +358,7 @@ jobs:
         run: |
           uv build bindings/python --out-dir dist-pypi
           if ($LASTEXITCODE -ne 0) { throw 'Python 分发包构建失败' }
-          uv run --python '>=3.12' --no-project scripts/check-python-dist.py dist-pypi
+          uv run --python '>=3.12' --no-project scripts/check-python-dist.py dist-pypi --require-native
           if ($LASTEXITCODE -ne 0) { throw 'Python 分发包仓库链接校验失败' }
 
       - name: 冒烟安装验证
