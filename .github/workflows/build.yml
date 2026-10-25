@@ -295,14 +295,17 @@ jobs:
         run: |
           uv venv smoke-venv
           uv pip install --python smoke-venv dist-pypi/maa_capture-*.whl
-          # 导入即加载内置 .so；顺带验证新增 C API 符号（PipeWire/Wlr setter）
+          # 导入即加载内置 .so；顺带验证新增 C API 符号（PipeWire/Wlr setter、
+          # 查询辅助——无 Wayland 的 CI 环境下 monitor_count 走连接失败路径返回 0）
           smoke-venv/bin/python -c @'
           import maa_capture as m
-          from maa_capture import Manager
+          from maa_capture import Manager, available_methods
           print("version:", m.__version__)
+          assert available_methods() != 0
           mgr = Manager(methods=Manager.METHOD_NONE)
           assert mgr.set_pipewire_target(-1, 0)
           assert mgr.set_wlr_socket(None)
+          print("monitors:", mgr.monitor_count())
           del mgr
           print("smoke OK")
           '@

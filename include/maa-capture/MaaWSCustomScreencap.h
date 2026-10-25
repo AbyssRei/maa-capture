@@ -133,6 +133,23 @@ extern "C"
     //            display（displays 顺序，0 = 第一个）。
     MAA_WS_EXPORT MaaWSBool MaaWSManagerSetMonitorIndex(MaaWSManagerHandle handle, uint32_t index);
 
+    // 查询本构建在本平台可注册的内置截图方式位掩码（编译期视角；具体单元
+    // 是否实际可用由 Connect 的测速淘汰决定）。无需 handle。
+    MAA_WS_EXPORT MaaWSMethod MaaWSManagerGetAvailableMethods(void);
+
+    // 显示器数量（索引语义与 MaaWSManagerSetMonitorIndex 一致）。
+    // Linux：需可连接的 Wayland（使用 MaaWSManagerSetWlrSocket 配置的 socket；
+    // Wlr 单元未编入或连接失败返回 0）。macOS：需 TCC 屏幕录制权限，无权限返回 0。
+    MAA_WS_EXPORT MaaWSBool MaaWSManagerGetMonitorCount(MaaWSManagerHandle handle, uint32_t* count);
+
+    // 第 index 号显示器信息：is_primary 输出 0/1；name 为设备名
+    //（Windows：如 "\\.\DISPLAY2"；macOS：本地化名称；Linux：空串）。
+    // name 为 NULL 时为长度查询模式：所需字节数（含结尾 NUL）写入 *name_len，返回 1；
+    // name 非 NULL 且 *name_len 不足时写入所需长度并返回 0；
+    // 成功时拷贝含 NUL 的名字并写入实际字节数。索引越界返回 0。
+    MAA_WS_EXPORT MaaWSBool MaaWSManagerGetMonitorInfo(
+        MaaWSManagerHandle handle, uint32_t index, uint32_t* is_primary, char* name, uint32_t* name_len);
+
     // 注册外部自定义截图单元（用 C 回调实现，包装为 CustomScreencapBridge 参与测速）。
     // callbacks 的 screencap 必须实现。成功返回 1。
     MAA_WS_EXPORT MaaWSBool

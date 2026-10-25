@@ -40,6 +40,16 @@ mgr.inactive()
 Windows 上 `set_monitor_index(i)` 设置后优先于 hwnd 定位（截第 i 块屏无需任何窗口）；
 Linux/macOS 的索引顺序分别为合成器广播 wl_output 的顺序与 `displays` 顺序。
 
+显示器枚举与可用方式查询：
+
+```python
+from maa_capture import available_methods
+
+print(hex(available_methods()))          # 本构建可用的内置方式位掩码
+for i in range(mgr.monitor_count()):
+    print(i, mgr.monitor_info(i))        # {'primary': True/False, 'name': '\\\\.\\DISPLAY1' ...}
+```
+
 Linux 上 PipeWire / Wlr 需要在 `connect()` 前配置目标：
 
 ```python

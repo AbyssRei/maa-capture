@@ -1,10 +1,9 @@
 #include "maa-capture/DesktopDupScreencap.h"
 
+#include "Win32MonitorUtils.hpp"
+
 #include "maa-capture/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
-
-#include <algorithm>
-#include <vector>
 
 MWS_NS_BEGIN
 
@@ -12,42 +11,15 @@ MWS_NS_BEGIN
 // 显示器索引 → HMONITOR
 // ---------------------------------------------------------------------------
 
-// 按索引取 HMONITOR：主显示器固定排到索引 0（EnumDisplayMonitors 的枚举顺序
-// 未保证主屏在前，这里显式交换），其余按枚举顺序。index 越界返回 nullptr。
+// 按索引取 HMONITOR：主显示器固定排到索引 0（枚举顺序见 Win32MonitorUtils，
+// 与 ScreencapMgr 的显示器查询 API 共用同一排序）。index 越界返回 nullptr。
 static HMONITOR monitor_from_index(int index)
 {
-    struct EnumContext
-    {
-        std::vector<HMONITOR> monitors;
-    } ctx;
-
-    EnumDisplayMonitors(
-        nullptr,
-        nullptr,
-        [](HMONITOR hmon, HDC hdc, LPRECT rect, LPARAM lparam) -> BOOL {
-            std::ignore = hdc;
-            std::ignore = rect;
-            reinterpret_cast<EnumContext*>(lparam)->monitors.push_back(hmon);
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&ctx));
-
-    if (ctx.monitors.empty()) {
+    const auto monitors = win32::monitors_primary_first();
+    if (index < 0 || index >= static_cast<int>(monitors.size())) {
         return nullptr;
     }
-
-    const HMONITOR primary = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-    if (primary) {
-        auto it = std::find(ctx.monitors.begin(), ctx.monitors.end(), primary);
-        if (it != ctx.monitors.end() && it != ctx.monitors.begin()) {
-            std::iter_swap(it, ctx.monitors.begin());
-        }
-    }
-
-    if (index < 0 || index >= static_cast<int>(ctx.monitors.size())) {
-        return nullptr;
-    }
-    return ctx.monitors[static_cast<std::size_t>(index)];
+    return monitors[static_cast<std::size_t>(index)];
 }
 
 DesktopDupScreencap::~DesktopDupScreencap()

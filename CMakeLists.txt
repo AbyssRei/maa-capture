@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(maa-capture
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "Standalone cross-platform screencap library extracted from MaaFramework"
     LANGUAGES C CXX)
 
@@ -142,8 +142,9 @@ if(WIN32)
     target_link_libraries(maa-capture PRIVATE
         d3d11 dxgi dwmapi runtimeobject winmm)
 elseif(APPLE)
-    # ScreenCaptureKit 截图单元（macOS 14+ SDK）
+    # ScreenCaptureKit 截图单元（macOS 14+ SDK）；显示器名称查询需 AppKit
     find_library(MWS_APPLICATION_SERVICES ApplicationServices REQUIRED)
+    find_library(MWS_APP_KIT AppKit REQUIRED)
     find_library(MWS_CORE_FOUNDATION CoreFoundation REQUIRED)
     find_library(MWS_CORE_MEDIA CoreMedia REQUIRED)
     find_library(MWS_CORE_VIDEO CoreVideo REQUIRED)
@@ -151,6 +152,7 @@ elseif(APPLE)
     target_compile_definitions(maa-capture PRIVATE MWS_SCK_AVAILABLE=1)
     target_link_libraries(maa-capture PRIVATE
         ${MWS_APPLICATION_SERVICES}
+        ${MWS_APP_KIT}
         ${MWS_CORE_FOUNDATION}
         ${MWS_CORE_MEDIA}
         ${MWS_CORE_VIDEO}

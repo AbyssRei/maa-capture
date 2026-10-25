@@ -3,6 +3,8 @@
 #include "maa-capture/Logger.h"
 #include "maa-capture/ScreencapMgr.h"
 
+#include <cstring>
+
 MWS_NS_BEGIN
 
 // 内部句柄载体（C++ 侧可直接使用 CustomScreencapBridge）
@@ -79,6 +81,16 @@ public:
     void set_monitor_index(uint32_t index)
     {
         mgr_.set_monitor_index(index);
+    }
+
+    std::size_t monitor_count() const
+    {
+        return mgr_.monitor_count();
+    }
+
+    std::optional<ScreencapMgr::MonitorInfo> monitor_info(uint32_t index) const
+    {
+        return mgr_.monitor_info(index);
     }
 
     bool connect()
@@ -202,6 +214,49 @@ extern "C"
             return 0;
         }
         static_cast<ManagerHandleImpl*>(handle)->set_monitor_index(index);
+        return 1;
+    }
+
+    MaaWSMethod MaaWSManagerGetAvailableMethods(void)
+    {
+        return static_cast<MaaWSMethod>(available_builtin_methods());
+    }
+
+    MaaWSBool MaaWSManagerGetMonitorCount(MaaWSManagerHandle handle, uint32_t* count)
+    {
+        if (!handle || !count) {
+            LogError << "handle or count is null";
+            return 0;
+        }
+        *count = static_cast<uint32_t>(static_cast<ManagerHandleImpl*>(handle)->monitor_count());
+        return 1;
+    }
+
+    MaaWSBool MaaWSManagerGetMonitorInfo(MaaWSManagerHandle handle, uint32_t index, uint32_t* is_primary, char* name, uint32_t* name_len)
+    {
+        if (!handle || !is_primary || !name_len) {
+            LogError << "handle, is_primary or name_len is null";
+            return 0;
+        }
+
+        auto info = static_cast<ManagerHandleImpl*>(handle)->monitor_info(index);
+        if (!info) {
+            return 0; // 索引越界
+        }
+
+        *is_primary = info->primary ? 1 : 0;
+
+        const auto needed = static_cast<uint32_t>(info->name.size()) + 1; // 含 NUL
+        if (name == nullptr) {
+            *name_len = needed; // 长度查询模式
+            return 1;
+        }
+        if (*name_len < needed) {
+            *name_len = needed;
+            return 0;
+        }
+        std::memcpy(name, info->name.c_str(), needed);
+        *name_len = needed;
         return 1;
     }
 

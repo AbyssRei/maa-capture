@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 MWS_NS_BEGIN
@@ -52,6 +53,11 @@ constexpr ScreencapMethod Method_ScreenCaptureKit = 1ULL << 8; // macOS
 constexpr ScreencapMethod Method_All = ~Method_None;
 constexpr ScreencapMethod Method_Foreground = Method_DXGI_DesktopDup_Window | Method_ScreenDC;
 constexpr ScreencapMethod Method_Background = Method_FramePool | Method_PrintWindow;
+
+// 本构建在本平台可注册的内置截图方式位掩码（编译期视角；具体单元是否
+// 实际可用由 connect() 的测速淘汰决定）。实现位于 .cpp，保证外部消费者
+// 与库本体看到一致的结果（单元可用性宏只在库构建内可见）。
+ScreencapMethod available_builtin_methods();
 
 inline const char* method_name(ScreencapMethod method)
 {
@@ -116,6 +122,22 @@ public:
     //            （SCShareableContent.displays 顺序，0 = 第一个）。
     // 索引越界时对应单元在测速预热阶段失败并被淘汰（Windows 回退主显示器）。
     void set_monitor_index(std::uint32_t index);
+
+    // ---- 显示器枚举（索引语义与 set_monitor_index 一致）----
+
+    // 显示器数量。Linux 上需要一次 Wayland 连接（使用 set_wlr_socket 配置的
+    // socket）；Wlr 单元未编入或连接失败时返回 0。macOS 需要 TCC 屏幕录制
+    // 权限（SCShareableContent），无权限时返回 0。
+    std::size_t monitor_count() const;
+
+    struct MonitorInfo
+    {
+        bool primary = false;  // 是否主显示器（Windows：MonitorFromPoint(0,0)）
+        std::string name;      // Windows: 设备名 "\\.\DISPLAY2"；macOS: 本地化名称；Linux: 空（协议不提供）
+    };
+
+    // 按索引取显示器信息；索引越界返回 nullopt。
+    std::optional<MonitorInfo> monitor_info(std::size_t index) const;
 
     // 连接：构建内置单元（+外部已注册单元）→ 预热 → 测速 → 选定最快。
     // 返回 false 表示没有任何可用截图方式。

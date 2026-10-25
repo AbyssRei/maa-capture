@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 #include "maa-capture/Common.h"
 #include "maa-capture/ScreencapBase.h"
@@ -50,5 +51,11 @@ private:
     uint32_t window_id_ = 0;
     uint32_t display_index_ = 0;
 };
+
+// ---- 显示器枚举（供 ScreencapMgr 查询 API；与截图单元同用 SCShareableContent，
+// 保证 displays 顺序与 set_monitor_index 的索引语义一致）----
+// 需 TCC 屏幕录制权限；无权限/失败时 count 返回 0、info 返回 false
+uint32_t sck_monitor_count();
+bool sck_monitor_info(uint32_t index, bool& primary, std::string& name);
 
 MWS_NS_END

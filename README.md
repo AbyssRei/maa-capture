@@ -156,6 +156,15 @@ cmake -S . -B build && cmake --build build --parallel    # 产出 build/libmaa-c
   PipeWire 的显示器选择发生在 portal 授权时，不受此设置影响
 - macOS：hwnd 为空时 `Method_ScreenCaptureKit` 截取的 display（0 = 第一个）
 
+**查询辅助**（无需 connect）：
+
+- `available_builtin_methods()` / `MaaWSManagerGetAvailableMethods`：本构建在本平台
+  可注册的内置方式位掩码（编译期视角；运行时连通性仍由测速决定）
+- `ScreencapMgr::monitor_count()` / `monitor_info(i)`（C：`MaaWSManagerGetMonitorCount` /
+  `MaaWSManagerGetMonitorInfo`）：显示器枚举，索引语义与 `set_monitor_index` 一致；
+  返回主屏标记与设备名（Windows `\\.\DISPLAY2` / macOS 本地化名称 / Linux 空）。
+  Linux 需可连接的 Wayland，macOS 需 TCC 屏幕录制权限。
+
 C API 侧对应 `MaaWSManagerCreate(hwnd, methods)` 与 `MaaWSManagerSetPipeWireTarget` /
 `MaaWSManagerSetWlrSocket` / `MaaWSManagerSetMonitorIndex`（非对应平台为 no-op）。
 

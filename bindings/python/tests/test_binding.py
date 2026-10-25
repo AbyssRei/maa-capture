@@ -14,7 +14,31 @@ import ctypes
 import os
 import sys
 
-from maa_capture import ImageBuffer, Manager, ScreencapCallbacks, set_lib_path
+from maa_capture import ImageBuffer, Manager, ScreencapCallbacks, available_methods, set_lib_path
+
+
+def test_query_helpers():
+    """查询辅助：可用方式位掩码 + 显示器枚举。"""
+    methods = available_methods()
+    assert methods != 0, f"available_methods returned {methods:#x}"
+
+    mgr = Manager(hwnd=None, methods=Manager.METHOD_NONE)
+    count = mgr.monitor_count()
+    if count == 0:
+        # 无显示器信息的环境（Linux 无 Wayland / macOS 无 TCC 权限）
+        print(f"[PASS] query helpers: methods={methods:#x}, monitors=0 (unavailable)")
+        return True
+
+    info0 = mgr.monitor_info(0)
+    assert info0 is not None, "monitor_info(0) returned None"
+    assert isinstance(info0["primary"], bool) and isinstance(info0["name"], str)
+    if sys.platform == "win32":
+        assert info0["primary"], "Windows 索引 0 应为主显示器"
+    assert mgr.monitor_info(count) is None, "越界索引应返回 None"
+
+    names = [mgr.monitor_info(i)["name"] for i in range(count)]
+    print(f"[PASS] query helpers: methods={methods:#x}, monitors={count} {names}")
+    return True
 
 
 def make_gradient(width=8, height=6):
@@ -96,5 +120,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         set_lib_path(sys.argv[1])
     test_custom_callback()
+    test_query_helpers()
     test_manager_builtin()
     print("ALL PASS")

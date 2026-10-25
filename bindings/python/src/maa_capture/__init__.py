@@ -31,16 +31,17 @@ from __future__ import annotations
 
 import sys
 
-from ._core import ImageBuffer, MaaWSBool, Manager, ScreencapCallbacks
+from ._core import ImageBuffer, MaaWSBool, Manager, ScreencapCallbacks, available_methods
 from ._loader import lib_path, set_lib_path
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "ImageBuffer",
     "ScreencapCallbacks",
     "Manager",
     "MaaWSBool",
+    "available_methods",
     "set_lib_path",
     "lib_path",
     "set_dll_path",

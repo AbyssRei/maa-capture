@@ -11,6 +11,7 @@
 #include "maa-capture/PrintWindowScreencap.h"
 #include "maa-capture/PrintWindowWithPseudoMinimizeScreencap.h"
 #include "maa-capture/ScreenDCScreencap.h"
+#include "Win32MonitorUtils.hpp"
 #elif defined(__APPLE__)
 #include "maa-capture/MacOS/ScreenCaptureKitScreencap.h"
 #else
@@ -24,6 +25,25 @@
 #endif
 
 MWS_NS_BEGIN
+
+ScreencapMethod available_builtin_methods()
+{
+#if defined(_WIN32)
+    return Method_GDI | Method_FramePool | Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window | Method_PrintWindow
+           | Method_ScreenDC;
+#elif defined(__APPLE__)
+    return Method_ScreenCaptureKit;
+#else
+    ScreencapMethod methods = Method_None;
+#if MWS_PIPEWIRE_AVAILABLE
+    methods |= Method_PipeWire;
+#endif
+#if MWS_WLR_AVAILABLE
+    methods |= Method_Wlr;
+#endif
+    return methods;
+#endif
+}
 
 ScreencapMgr::ScreencapMgr(void* hwnd)
     : hwnd_(hwnd)
@@ -63,6 +83,52 @@ void ScreencapMgr::set_wlr_socket(std::string socket_name)
 void ScreencapMgr::set_monitor_index(std::uint32_t index)
 {
     monitor_index_ = static_cast<int>(index);
+}
+
+std::size_t ScreencapMgr::monitor_count() const
+{
+#if defined(_WIN32)
+    return win32::monitor_count();
+#elif defined(__APPLE__)
+    return sck_monitor_count();
+#else
+    #if MWS_WLR_AVAILABLE
+    // 与 WlrScreencap 同源：临时连接 Wayland（使用 set_wlr_socket 的 socket），
+    // registry roundtrip 后才知道 wl_output 列表
+    WaylandClient client;
+    if (!client.connect(wlr_socket_)) {
+        LogWarn << "monitor_count: failed to connect Wayland, no output info" << VAR(wlr_socket_);
+        return 0;
+    }
+    return client.output_count();
+    #else
+    LogWarn << "monitor_count: Wlr unit not built (wayland-client missing), no output info";
+    return 0;
+    #endif
+#endif
+}
+
+std::optional<ScreencapMgr::MonitorInfo> ScreencapMgr::monitor_info(std::size_t index) const
+{
+    MonitorInfo info;
+#if defined(_WIN32)
+    if (!win32::monitor_info(index, info.primary, info.name)) {
+        return std::nullopt;
+    }
+    return info;
+#elif defined(__APPLE__)
+    if (!sck_monitor_info(static_cast<std::uint32_t>(index), info.primary, info.name)) {
+        return std::nullopt;
+    }
+    return info;
+#else
+    if (index >= monitor_count()) {
+        return std::nullopt;
+    }
+    // wl_output 的名称/主输出信息需绑定 output listener（协议 version >= 4），
+    // 暂不提供；索引本身即有效信息
+    return info;
+#endif
 }
 
 void ScreencapMgr::build_builtin_units()

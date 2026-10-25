@@ -117,6 +117,17 @@ class ScreencapCallbacks:
         return s
 
 
+def available_methods() -> int:
+    """本构建在本平台可注册的内置截图方式位掩码（编译期视角）。
+
+    可与 Manager 的 METHOD_* 常量按位与判断某方式是否可用；具体单元是否
+    实际可用仍由 connect() 的测速淘汰决定。
+    """
+    dll = _loader.load()
+    Manager._setup_prototypes(dll)
+    return dll.MaaWSManagerGetAvailableMethods()
+
+
 class Manager:
     """截图管理器（MaaWSManager*）：内置方式测速选择 + 外部回调单元注册。
 
@@ -169,6 +180,18 @@ class Manager:
         dll.MaaWSManagerSetWlrSocket.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         dll.MaaWSManagerSetMonitorIndex.restype = MaaWSBool
         dll.MaaWSManagerSetMonitorIndex.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        dll.MaaWSManagerGetAvailableMethods.restype = ctypes.c_uint64
+        dll.MaaWSManagerGetAvailableMethods.argtypes = []
+        dll.MaaWSManagerGetMonitorCount.restype = MaaWSBool
+        dll.MaaWSManagerGetMonitorCount.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        dll.MaaWSManagerGetMonitorInfo.restype = MaaWSBool
+        dll.MaaWSManagerGetMonitorInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
         dll.MaaWSManagerRegisterCustomUnit.restype = MaaWSBool
         dll.MaaWSManagerRegisterCustomUnit.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -207,6 +230,34 @@ class Manager:
         - macOS：hwnd 为 None 时 METHOD_SCREENCAPTUREKIT 截取的 display（0 = 第一个）
         """
         return bool(self._dll.MaaWSManagerSetMonitorIndex(self._handle, index))
+
+    # ---- 查询辅助 ----
+
+    def monitor_count(self) -> int:
+        """显示器数量（索引语义与 set_monitor_index 一致）。
+
+        Linux：需可连接的 Wayland（Wlr 单元未编入或连接失败返回 0）；
+        macOS：需 TCC 屏幕录制权限，无权限返回 0。
+        """
+        count = ctypes.c_uint32(0)
+        if not self._dll.MaaWSManagerGetMonitorCount(self._handle, ctypes.byref(count)):
+            return 0
+        return count.value
+
+    def monitor_info(self, index: int) -> Optional[dict]:
+        """第 index 号显示器信息，返回 ``{"primary": bool, "name": str}``。
+
+        name：Windows 为设备名（如 ``\\\\.\\DISPLAY2``）、macOS 为本地化名称、
+        Linux 为空串。索引越界返回 None。
+        """
+        primary = ctypes.c_uint32(0)
+        needed = ctypes.c_uint32(0)
+        if not self._dll.MaaWSManagerGetMonitorInfo(self._handle, index, ctypes.byref(primary), None, ctypes.byref(needed)):
+            return None
+        buf = ctypes.create_string_buffer(max(needed.value, 1))
+        if not self._dll.MaaWSManagerGetMonitorInfo(self._handle, index, ctypes.byref(primary), buf, ctypes.byref(needed)):
+            return None
+        return {"primary": bool(primary.value), "name": buf.value.decode("utf-8", "replace")}
 
     # ---- 通用接口 ----
 
