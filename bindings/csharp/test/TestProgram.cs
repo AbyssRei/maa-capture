@@ -8,7 +8,7 @@ class Program
 {
     const int W = 8;
     const int H = 6;
-    static byte[] s_pixels;
+    static byte[] s_pixels = Array.Empty<byte>();
 
     // ---- 外部截图回调：写入 BGRA 渐变 ----
     static byte OnScreencap(IntPtr transArg, ref ImageBuffer buffer)

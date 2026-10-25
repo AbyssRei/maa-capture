@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -95,7 +96,11 @@ class ScreencapCallbacks:
                 out = ImageBuffer.from_address(buf_ptr)
             except (ValueError, TypeError):
                 return 0
-            return 1 if user_fn(trans_arg, out) else 0
+            try:
+                return 1 if user_fn(trans_arg, out) else 0
+            except Exception:
+                logging.getLogger(__name__).exception("Screenshot callback failed")
+                return 0
 
         wrapper._user_fn = user_fn  # 保活引用（防 GC 释放用户函数）
         return wrapper
@@ -210,13 +215,13 @@ class Manager:
     def set_pipewire_target(self, fd: int = -1, node_id: int = 0) -> bool:
         """设置 PipeWire 目标：fd >= 0 时走 portal fd（连接后 fd 归库所有），
         否则连接会话 daemon。两者都未指定时 PipeWire 单元不参与构建。"""
-        return bool(self._dll.MaaWSManagerSetPipeWireTarget(self._handle, fd, node_id))
+        return bool(self._dll.MaaWSManagerSetPipeWireTarget(self._require_handle(), fd, node_id))
 
     def set_wlr_socket(self, socket_name: Optional[str] = None) -> bool:
         """设置 wlr-screencopy 的 Wayland socket 名；None/空串 = WAYLAND_DISPLAY 默认值。"""
         return bool(
             self._dll.MaaWSManagerSetWlrSocket(
-                self._handle, socket_name.encode("utf-8") if socket_name else None
+                self._require_handle(), socket_name.encode("utf-8") if socket_name else None
             )
         )
 
@@ -229,7 +234,7 @@ class Manager:
           PipeWire 的显示器选择发生在 portal 授权时，本设置不生效
         - macOS：hwnd 为 None 时 METHOD_SCREENCAPTUREKIT 截取的 display（0 = 第一个）
         """
-        return bool(self._dll.MaaWSManagerSetMonitorIndex(self._handle, index))
+        return bool(self._dll.MaaWSManagerSetMonitorIndex(self._require_handle(), index))
 
     # ---- 查询辅助 ----
 
@@ -240,7 +245,7 @@ class Manager:
         macOS：需 TCC 屏幕录制权限，无权限返回 0。
         """
         count = ctypes.c_uint32(0)
-        if not self._dll.MaaWSManagerGetMonitorCount(self._handle, ctypes.byref(count)):
+        if not self._dll.MaaWSManagerGetMonitorCount(self._require_handle(), ctypes.byref(count)):
             return 0
         return count.value
 
@@ -252,10 +257,10 @@ class Manager:
         """
         primary = ctypes.c_uint32(0)
         needed = ctypes.c_uint32(0)
-        if not self._dll.MaaWSManagerGetMonitorInfo(self._handle, index, ctypes.byref(primary), None, ctypes.byref(needed)):
+        if not self._dll.MaaWSManagerGetMonitorInfo(self._require_handle(), index, ctypes.byref(primary), None, ctypes.byref(needed)):
             return None
         buf = ctypes.create_string_buffer(max(needed.value, 1))
-        if not self._dll.MaaWSManagerGetMonitorInfo(self._handle, index, ctypes.byref(primary), buf, ctypes.byref(needed)):
+        if not self._dll.MaaWSManagerGetMonitorInfo(self._require_handle(), index, ctypes.byref(primary), buf, ctypes.byref(needed)):
             return None
         return {"primary": bool(primary.value), "name": buf.value.decode("utf-8", "replace")}
 
@@ -271,18 +276,18 @@ class Manager:
         self._native_structs.append(c_struct)
         return bool(
             self._dll.MaaWSManagerRegisterCustomUnit(
-                self._handle, name.encode("utf-8"), ctypes.cast(ctypes.byref(c_struct), ctypes.c_void_p), ctypes.c_void_p(id(callbacks))
+                self._require_handle(), name.encode("utf-8"), ctypes.cast(ctypes.byref(c_struct), ctypes.c_void_p), ctypes.c_void_p(id(callbacks))
             )
         )
 
     def connect(self) -> bool:
         """连接 + 测速选择最快截图方式。"""
-        return bool(self._dll.MaaWSManagerConnect(self._handle))
+        return bool(self._dll.MaaWSManagerConnect(self._require_handle()))
 
     def screencap(self) -> Optional[ImageBuffer.Info]:
         """截图一次。成功返回 ImageBuffer.Info（width/height/channels/step/data），失败返回 None。"""
         buf = ImageBuffer()
-        if not self._dll.MaaWSManagerScreencap(self._handle, ctypes.byref(buf)):
+        if not self._dll.MaaWSManagerScreencap(self._require_handle(), ctypes.byref(buf)):
             return None
         return ImageBuffer.Info(
             width=buf.width,
@@ -293,16 +298,47 @@ class Manager:
         )
 
     def selected_unit_name(self) -> Optional[str]:
-        name = self._dll.MaaWSManagerSelectedUnitName(self._handle)
+        name = self._dll.MaaWSManagerSelectedUnitName(self._require_handle())
         return name.decode("utf-8") if name else None
 
     def inactive(self) -> None:
-        self._dll.MaaWSManagerInactive(self._handle)
+        self._dll.MaaWSManagerInactive(self._require_handle())
+
+    @property
+    def closed(self) -> bool:
+        """Whether the native manager has been permanently released."""
+        return not getattr(self, "_handle", None)
+
+    def _require_handle(self):
+        if self.closed:
+            raise RuntimeError("Manager is closed")
+        return self._handle
+
+    def close(self) -> None:
+        """Restore capture state and release the native manager; safe to call repeatedly."""
+        handle = getattr(self, "_handle", None)
+        if not handle:
+            return
+        self._handle = None
+        try:
+            self._dll.MaaWSManagerInactive(handle)
+        finally:
+            try:
+                self._dll.MaaWSManagerDestroy(handle)
+            finally:
+                self._callbacks.clear()
+                self._native_structs.clear()
+
+    def __enter__(self):
+        self._require_handle()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
 
     def __del__(self):
-        if getattr(self, "_handle", None):
-            try:
-                self._dll.MaaWSManagerDestroy(self._handle)
-            except Exception:
-                pass
-            self._handle = None
+        try:
+            self.close()
+        except Exception:
+            pass

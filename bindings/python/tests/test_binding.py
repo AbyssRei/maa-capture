@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import unittest
 
 from maa_capture import ImageBuffer, Manager, ScreencapCallbacks, available_methods, set_lib_path
 
@@ -39,6 +40,47 @@ def test_query_helpers():
     names = [mgr.monitor_info(i)["name"] for i in range(count)]
     print(f"[PASS] query helpers: methods={methods:#x}, monitors={count} {names}")
     return True
+
+
+
+
+def test_callback_exception():
+    def fail(_arg, _out):
+        raise ValueError("callback failure")
+    with Manager(methods=Manager.METHOD_NONE) as manager:
+        assert manager.register_custom_unit("failure", ScreencapCallbacks(screencap=fail))
+        with unittest.TestCase().assertLogs("maa_capture._core", level="ERROR"):
+            assert not manager.connect()
+    print("[PASS] callback exceptions become a capture failure")
+
+
+def test_manager_lifecycle():
+    """Context exit releases native callbacks even while propagating an exception."""
+    calls = []
+    callbacks = ScreencapCallbacks(
+        screencap=lambda _arg, _out: 0,
+        inactive=lambda _arg: calls.append("inactive") or 1,
+    )
+    mgr = Manager(methods=Manager.METHOD_NONE)
+    try:
+        with mgr as active:
+            assert active is mgr and not mgr.closed
+            assert mgr.register_custom_unit("lifecycle", callbacks)
+            raise ValueError("sentinel")
+    except ValueError as error:
+        assert str(error) == "sentinel"
+    else:
+        raise AssertionError("Context manager swallowed the exception")
+    assert mgr.closed and calls == ["inactive"]
+    mgr.close()
+    assert calls == ["inactive"]
+    try:
+        mgr.connect()
+    except RuntimeError as error:
+        assert "closed" in str(error)
+    else:
+        raise AssertionError("Closed manager accepted an operation")
+    print("[PASS] deterministic manager lifecycle")
 
 
 def make_gradient(width=8, height=6):
@@ -121,6 +163,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         set_lib_path(sys.argv[1])
     test_custom_callback()
+    test_manager_lifecycle()
+    test_callback_exception()
     test_query_helpers()
     test_manager_builtin()
     print("ALL PASS")
