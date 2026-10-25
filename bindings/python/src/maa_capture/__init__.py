@@ -34,7 +34,7 @@ import sys
 from ._core import ImageBuffer, MaaWSBool, Manager, ScreencapCallbacks, available_methods
 from ._loader import lib_path, set_lib_path
 
-__version__ = "0.4.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "ImageBuffer",
@@ -49,7 +49,7 @@ __all__ = [
     "__version__",
 ]
 
-# 旧 API（v1.0 前的 Windows 专用命名）保留为别名
+# 旧 API（早期 Windows 专用命名）保留为别名
 set_dll_path = set_lib_path
 dll_path = lib_path
 

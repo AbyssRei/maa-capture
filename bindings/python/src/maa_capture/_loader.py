@@ -2,7 +2,7 @@
 
 加载顺序：
   1. set_lib_path() 显式指定的文件或目录
-  2. 环境变量 ``MAA_WS_LIB``（v1.0 起推荐）或 ``MAA_WS_DLL_DIR``（旧名，等价），
+  2. 环境变量 ``MAA_WS_LIB``（推荐）或 ``MAA_WS_DLL_DIR``（旧名，等价），
      值为库文件或所在目录
   3. 随 wheel 分发的内置原生库 ``_native/<platform>/<libname>``
   4. 系统搜索（ctypes.CDLL 按名加载，即 PATH / ldconfig / DYLD 路径）
@@ -44,7 +44,7 @@ def lib_path() -> Optional[str]:
     return _override
 
 
-# 旧 API 别名（v1.0 前绑定仅支持 Windows DLL 时使用）
+# 旧 API 别名（早期绑定仅支持 Windows DLL 时使用）
 set_dll_path = set_lib_path
 dll_path = lib_path
 

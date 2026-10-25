@@ -7,8 +7,9 @@ import com.sun.jna.Pointer;
  * maa-capture Java 绑定示例。
  *
  * 运行（需要 jna.jar 与 DLL 在 jna.library.path）：
- *   javac -cp jna-5.14.0.jar MaaCapture.java Sample.java
- *   java -Djna.library.path=build/Release -cp .;jna-5.14.0.jar maa.capture.Sample
+ *   pwsh ./fetch-jna.ps1
+ *   javac -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
+ *   java -Djna.library.path=build/Release -cp "build-classes;.deps/jna.jar" maa.capture.Sample
  */
 public class Sample
 {

@@ -1,9 +1,12 @@
 # maa-capture
 
+主仓库：[AbyssRei/maa-capture](https://github.com/AbyssRei/maa-capture)。
+当前稳定版为 **1.0.0**；[更新日志](CHANGELOG.md)与[版本及发布约定](docs/RELEASING.md)。
+
 从 [MaaFramework](https://github.com/MaaXYZ/MaaFramework) 分离出来的**跨平台截图实现**独立库
 （Win32 六种方式 + Linux PipeWire / wlr-screencopy + macOS ScreenCaptureKit）。
 
-- 依赖精简：**零第三方依赖**（仅各平台系统 API + C++ 标准库）——图像与颜色转换由内置
+- 依赖精简：Windows / macOS 仅依赖系统 API 与 C++ 标准库；Linux 按启用的后端依赖 PipeWire、libdrm、Wayland——图像与颜色转换由内置
   `Image.hpp` 提供（从 OpenCV 源码提取的最小实现），不再依赖 MaaFramework / MaaUtils / OpenCV
 - Windows 保留原实现的全部 6 种截图方式与伪最小化机制；
   Linux 移植 PipeWire 与 Wlr(Wayland) 单元，macOS 移植 ScreenCaptureKit 单元
@@ -119,7 +122,7 @@ cmake --build build-msvc2026 --config Release
 
 - **无第三方依赖**：图像与颜色转换由内置 `include/maa-capture/Image.hpp` 提供
   （从 OpenCV 源码提取的 `Mat` 子集语义 + `cvtColor` 子集 + `Rect` 相交），
-  链接产物不依赖任何外部 DLL/SO
+  Windows 库无需额外图像运行库；Linux 按启用的后端链接系统截图依赖
 - `MWS_ENABLE_FRAMEPOOL`（默认 ON）：WGC 截图需要 Windows 10 SDK 10.0.22000+；SDK 不足时头文件自动降级为占位实现
 - `MWS_BUILD_SAMPLES`（默认 ON）：构建示例程序
 - `MWS_WIN32_COMPATIBLE`（默认 OFF）：旧版 DPI 缩放兼容分支（对应 MaaFramework 的 `MAA_WIN32_COMPATIBLE`）

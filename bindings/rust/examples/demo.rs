@@ -1,7 +1,7 @@
 //! maa-capture Rust 绑定示例
 //!
 //! 构建：`LIB=D:\...\build\Release cargo build --example demo`
-//! 运行：把 maa-capture.dll（及 OpenCV 运行库）所在目录加入 PATH，
+//! 运行：把 maa-capture.dll所在目录加入 PATH，
 //!       然后 `cargo run --example demo`
 
 use std::ffi::c_void;

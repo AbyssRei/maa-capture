@@ -18,7 +18,7 @@ pip install maa-capture
 pip install "maa-capture[numpy]"
 ```
 
-需要 Python >= 3.9，无其他依赖。
+需要 Python >= 3.12，无其他依赖。
 
 ## 快速上手
 
