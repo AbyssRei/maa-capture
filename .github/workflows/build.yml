@@ -358,6 +358,31 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: 下载完整发布资产用于预发布校验
+        uses: actions/download-artifact@v8
+        with:
+          pattern: maa-capture-*
+          path: release-check
+          merge-multiple: true
+
+      - name: 校验分支和标签的发布资产集合
+        run: |
+          $version = '${{ needs.build.outputs.version }}'
+          $expected = @(
+            "maa-capture-v$version-windows-x64.7z",
+            "maa-capture-v$version-linux-x64.tar.gz",
+            "maa-capture-v$version-macos-arm64.tar.gz",
+            "maa_capture-$version-py3-none-any.whl",
+            "maa_capture-$version.tar.gz"
+          )
+          foreach ($name in $expected) {
+            $path = Join-Path 'release-check' $name
+            if (-not (Test-Path $path -PathType Leaf) -or (Get-Item $path).Length -le 0) {
+              throw "发布资产缺失或为空：$name"
+            }
+          }
+          Write-Host '三平台原生包、wheel、sdist 发布资产齐全'
+
   publish-pypi:
     name: 发布 PyPI
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
