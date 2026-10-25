@@ -63,7 +63,7 @@ void WaylandClient::close()
     // Release protocol objects first, then disconnect display.
     screencopy_manager_.reset();
     shm_.reset();
-    output_.reset();
+    outputs_.clear();
     registry_.reset();
     display_.reset();
 
@@ -81,6 +81,16 @@ bool WaylandClient::bind_protocol()
     registry_listener_.global = [](void* data, struct wl_registry* registry, uint32_t id, const char* interface, uint32_t version) {
         const auto self = static_cast<WaylandClient*>(data);
 
+        // wl_output 可能出现多个（多显示器），全部按广播顺序收集；
+        // 其余接口为单实例，后绑定的覆盖先绑定的
+        if (std::string_view(interface) == "wl_output") {
+            LogDebug << "Bind protocol" << VAR(interface);
+            self->outputs_.emplace_back(
+                static_cast<wl_output*>(wl_registry_bind(registry, id, &wl_output_interface, version)),
+                std::default_delete<wl_output> { });
+            return;
+        }
+
 #define BIND(interface_type, global_member)                                                                     \
     if (std::string_view(interface) == #interface_type) {                                                       \
         LogDebug << "Bind protocol" << VAR(interface);                                                          \
@@ -90,7 +100,6 @@ bool WaylandClient::bind_protocol()
         return;                                                                                                 \
     }
 
-        BIND(wl_output, output_);
         BIND(wl_shm, shm_);
         BIND(zwlr_screencopy_manager_v1, screencopy_manager_);
 
@@ -104,7 +113,7 @@ bool WaylandClient::bind_protocol()
     if (!process_requests()) {
         return false;
     }
-    if (!output_ && !shm_) {
+    if (outputs_.empty() && !shm_) {
         LogError << "Compositor doesn't support wayland core protocol";
         return false;
     }
@@ -138,10 +147,13 @@ std::shared_ptr<wl_shm> WaylandClient::get_shm()
     return p;
 }
 
-std::shared_ptr<wl_output> WaylandClient::get_output()
+std::shared_ptr<wl_output> WaylandClient::get_output(std::size_t index)
 {
-    std::shared_ptr p(output_);
-    return p;
+    if (index >= outputs_.size()) {
+        LogError << "output index out of range" << VAR(index) << VAR(outputs_.size());
+        return nullptr;
+    }
+    return outputs_[index];
 }
 
 MWS_NS_END

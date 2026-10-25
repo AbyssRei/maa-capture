@@ -12,6 +12,11 @@ std::optional<Image> WlrScreencap::screencap()
     if (!client_->connected()) {
         return std::nullopt;
     }
+    if (!output_) {
+        // 构造时 output_index 越界（显示器拔出/索引错误）
+        LogError << "no output selected (output index out of range?)";
+        return std::nullopt;
+    }
 
     std::unique_ptr<zwlr_screencopy_frame_v1> screencopy_frame;
     screencopy_frame.reset(zwlr_screencopy_manager_v1_capture_output(screencopy_manager_.get(), 0, output_.get()));

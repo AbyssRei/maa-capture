@@ -29,8 +29,12 @@ MWS_NS_BEGIN
 class ScreenCaptureKitScreencap : public ScreencapBase
 {
 public:
-    explicit ScreenCaptureKitScreencap(uint32_t window_id)
+    // window_id 非 0 时按 CGWindowID 截取指定窗口（display_index 被忽略）；
+    // window_id 为 0 时截取整个显示器，display_index 选择第几个 display
+    // （SCShareableContent.displays 顺序，默认 0 = 第一个），越界索引截图时失败。
+    explicit ScreenCaptureKitScreencap(uint32_t window_id, uint32_t display_index = 0)
         : window_id_(window_id)
+        , display_index_(display_index)
     {
     }
 
@@ -44,6 +48,7 @@ private:
     std::optional<Image> screencap_display();
 
     uint32_t window_id_ = 0;
+    uint32_t display_index_ = 0;
 };
 
 MWS_NS_END

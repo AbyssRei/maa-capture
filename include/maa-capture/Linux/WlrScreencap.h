@@ -18,6 +18,7 @@
 #error "WlrScreencap is Linux-only"
 #endif
 
+#include <cstddef>
 #include <memory>
 #include <utility>
 
@@ -31,11 +32,13 @@ MWS_NS_BEGIN
 class WlrScreencap : public ScreencapBase
 {
 public:
-    explicit WlrScreencap(std::shared_ptr<WaylandClient> client)
+    // output_index 选择截取的输出（显示器）：合成器广播 wl_output 的顺序，
+    // 默认 0（第一个输出）；越界索引构造出的单元截图时会失败并记日志
+    explicit WlrScreencap(std::shared_ptr<WaylandClient> client, std::size_t output_index = 0)
         : client_(std::move(client))
         , screencopy_manager_(client_->get_screencopy_manager())
         , shm_(client_->get_shm())
-        , output_(client_->get_output())
+        , output_(client_->get_output(output_index))
     {
     }
 

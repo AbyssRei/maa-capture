@@ -27,13 +27,18 @@ pip install "maa-capture[numpy]"
 ```python
 from maa_capture import Manager
 
-mgr = Manager(hwnd=None)          # Windows: DXGI 主显示器整屏；macOS: 整个主显示器
+mgr = Manager(hwnd=None)          # Windows: DXGI 整屏；macOS: 整个显示器
+mgr.set_monitor_index(0)          # 可选：选择显示器（0 = Windows 主显示器 /
+                                  #  Linux 第一个 wl_output /  macOS 第一个 display）
 mgr.connect()                     # 预热 + 测速，自动选最快方式
 info = mgr.screencap()            # ImageBuffer.Info（BGR 三通道）
 print(info.width, info.height, info.channels, len(info.data))
 print(mgr.selected_unit_name())   # 例如 "DXGI_DesktopDup" / "ScreenCaptureKit"
 mgr.inactive()
 ```
+
+Windows 上 `set_monitor_index(i)` 设置后优先于 hwnd 定位（截第 i 块屏无需任何窗口）；
+Linux/macOS 的索引顺序分别为合成器广播 wl_output 的顺序与 `displays` 顺序。
 
 Linux 上 PipeWire / Wlr 需要在 `connect()` 前配置目标：
 

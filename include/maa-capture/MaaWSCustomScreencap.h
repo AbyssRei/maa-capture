@@ -123,6 +123,16 @@ extern "C"
     // socket_name 为 NULL 或空串时使用 WAYLAND_DISPLAY 环境变量默认值。
     MAA_WS_EXPORT MaaWSBool MaaWSManagerSetWlrSocket(MaaWSManagerHandle handle, const char* socket_name);
 
+    // 设置整屏截图的目标显示器索引（Connect 前调用）。各平台语义：
+    //   Windows：MAA_WS_METHOD_DXGI_DESKTOP_DUP 复制的显示器；0 = 主显示器，
+    //            其余按 EnumDisplayMonitors 顺序；设置后优先于 hwnd 定位，
+    //            越界回退主显示器。
+    //   Linux  ：MAA_WS_METHOD_WLR 截取的 wl_output（合成器广播顺序，0 = 第一个）；
+    //            PipeWire 的显示器选择发生在 portal 授权时，本设置不生效。
+    //   macOS  ：hwnd 为 NULL/0 时 MAA_WS_METHOD_SCREENCAPTUREKIT 截取的
+    //            display（displays 顺序，0 = 第一个）。
+    MAA_WS_EXPORT MaaWSBool MaaWSManagerSetMonitorIndex(MaaWSManagerHandle handle, uint32_t index);
+
     // 注册外部自定义截图单元（用 C 回调实现，包装为 CustomScreencapBridge 参与测速）。
     // callbacks 的 screencap 必须实现。成功返回 1。
     MAA_WS_EXPORT MaaWSBool

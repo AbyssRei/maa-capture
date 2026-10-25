@@ -148,8 +148,16 @@ cmake -S . -B build && cmake --build build --parallel    # 产出 build/libmaa-c
 | Linux | 忽略；经 `set_pipewire_target(fd, node_id)` 或 `set_wlr_socket(name)` 配置 | PipeWire / Wlr |
 | macOS | 目标窗口 `CGWindowID`（0 = 整屏） | ScreenCaptureKit |
 
+**整屏截图的显示器选择**（`set_monitor_index(i)`，connect() 前调用）：
+
+- Windows：`Method_DXGI_DesktopDup` 复制的显示器；**0 = 主显示器**，其余按
+  `EnumDisplayMonitors` 顺序；设置后优先于 hwnd 定位，越界回退主显示器
+- Linux：`Method_Wlr` 截取的 `wl_output`（合成器广播顺序，0 = 第一个）；
+  PipeWire 的显示器选择发生在 portal 授权时，不受此设置影响
+- macOS：hwnd 为空时 `Method_ScreenCaptureKit` 截取的 display（0 = 第一个）
+
 C API 侧对应 `MaaWSManagerCreate(hwnd, methods)` 与 `MaaWSManagerSetPipeWireTarget` /
-`MaaWSManagerSetWlrSocket`（非 Linux 平台为 no-op）。
+`MaaWSManagerSetWlrSocket` / `MaaWSManagerSetMonitorIndex`（非对应平台为 no-op）。
 
 ## 用法
 

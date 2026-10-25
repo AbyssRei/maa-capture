@@ -106,6 +106,17 @@ public:
     // wlr-screencopy 使用的 Wayland socket 名；空串 = WAYLAND_DISPLAY 默认值。
     void set_wlr_socket(std::string socket_name);
 
+    // ---- 整屏截图的显示器选择（须在 connect() 前调用）----
+    // 各平台语义：
+    //   Windows：Method_DXGI_DesktopDup 复制的显示器；0 = 主显示器，其余按
+    //            EnumDisplayMonitors 顺序。设置后优先于 hwnd 定位。
+    //   Linux  ：Method_Wlr 截取的 wl_output（合成器广播顺序，0 = 第一个）；
+    //            PipeWire 的显示器选择发生在 portal 授权时，本设置不生效。
+    //   macOS  ：hwnd 为空时 Method_ScreenCaptureKit 截取的 display
+    //            （SCShareableContent.displays 顺序，0 = 第一个）。
+    // 索引越界时对应单元在测速预热阶段失败并被淘汰（Windows 回退主显示器）。
+    void set_monitor_index(std::uint32_t index);
+
     // 连接：构建内置单元（+外部已注册单元）→ 预热 → 测速 → 选定最快。
     // 返回 false 表示没有任何可用截图方式。
     bool connect();
@@ -143,6 +154,9 @@ private:
     int pipewire_fd_ = -1;
     std::uint32_t pipewire_node_id_ = 0;
     std::string wlr_socket_;
+
+    // 整屏截图的显示器索引（-1 = 未指定，见 set_monitor_index）
+    int monitor_index_ = -1;
 
     std::map<std::string, UnitEntry> units_;
     std::shared_ptr<ScreencapBase> selected_ = nullptr;

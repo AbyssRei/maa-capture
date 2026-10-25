@@ -130,7 +130,13 @@ std::optional<Image> ScreenCaptureKitScreencap::screencap_display()
             return;
         }
 
-        SCDisplay* display = content.displays[0];
+        if (display_index_ >= content.displays.count) {
+            LogError << "display index out of range" << VAR(display_index_) << VAR(content.displays.count);
+            dispatch_semaphore_signal(semaphore);
+            return;
+        }
+
+        SCDisplay* display = content.displays[display_index_];
         SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
         SCStreamConfiguration* config = [[SCStreamConfiguration alloc] init];
         config.width = display.width;

@@ -60,6 +60,11 @@ void ScreencapMgr::set_wlr_socket(std::string socket_name)
     wlr_socket_ = std::move(socket_name);
 }
 
+void ScreencapMgr::set_monitor_index(std::uint32_t index)
+{
+    monitor_index_ = static_cast<int>(index);
+}
+
 void ScreencapMgr::build_builtin_units()
 {
     const auto add = [&](ScreencapMethod flag, const char* name, std::shared_ptr<ScreencapBase> unit) {
@@ -73,14 +78,16 @@ void ScreencapMgr::build_builtin_units()
     const HWND hwnd = static_cast<HWND>(hwnd_);
     add(Method_GDI, "GDI", std::make_shared<GdiScreencap>(hwnd));
     add(Method_FramePool, "FramePool", std::make_shared<FramePoolWithPseudoMinimizeScreencap>(hwnd));
-    add(Method_DXGI_DesktopDup, "DXGI_DesktopDup", std::make_shared<DesktopDupScreencap>(hwnd));
+    // 整屏单元：显式显示器索引优先于 hwnd 定位（monitor_index_ < 0 时按原行为）
+    add(Method_DXGI_DesktopDup, "DXGI_DesktopDup", std::make_shared<DesktopDupScreencap>(hwnd, monitor_index_));
     add(Method_DXGI_DesktopDup_Window, "DXGI_DesktopDup_Window", std::make_shared<DesktopDupWindowScreencap>(hwnd));
     add(Method_PrintWindow, "PrintWindow", std::make_shared<PrintWindowWithPseudoMinimizeScreencap>(hwnd));
     add(Method_ScreenDC, "ScreenDC", std::make_shared<ScreenDCScreencap>(hwnd));
 #elif defined(__APPLE__)
-    // hwnd_ 携带 CGWindowID（0 = 整个主显示器）
+    // hwnd_ 携带 CGWindowID（非 0 = 按窗口截取）；为 0 时整屏，可用显示器索引选择
     const auto window_id = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(hwnd_));
-    add(Method_ScreenCaptureKit, "ScreenCaptureKit", std::make_shared<ScreenCaptureKitScreencap>(window_id));
+    const auto display_index = monitor_index_ >= 0 ? static_cast<std::uint32_t>(monitor_index_) : 0;
+    add(Method_ScreenCaptureKit, "ScreenCaptureKit", std::make_shared<ScreenCaptureKitScreencap>(window_id, display_index));
 #else
     // Linux：单元按编译期可用性注册（依赖缺失时 CMake 已裁剪对应源文件）
 #if MWS_PIPEWIRE_AVAILABLE
@@ -99,7 +106,9 @@ void ScreencapMgr::build_builtin_units()
     if (builtin_methods_ & Method_Wlr) {
         auto client = std::make_shared<WaylandClient>();
         if (client->connect(wlr_socket_)) {
-            add(Method_All, "Wlr", std::make_shared<WlrScreencap>(std::move(client)));
+            // 显示器索引：合成器广播 wl_output 的顺序（默认 0）
+            const auto output_index = static_cast<std::size_t>(std::max(0, monitor_index_));
+            add(Method_All, "Wlr", std::make_shared<WlrScreencap>(std::move(client), output_index));
         }
         else {
             LogWarn << "Failed to connect Wayland socket, skipping Wlr unit" << VAR(wlr_socket_);

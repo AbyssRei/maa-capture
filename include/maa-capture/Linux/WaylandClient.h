@@ -15,8 +15,10 @@
 #include "maa-capture/Common.h"
 #include "maa-capture/Linux/WaylandHelper.h"
 
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 MWS_NS_BEGIN
 
@@ -37,7 +39,11 @@ public:
 
     std::shared_ptr<zwlr_screencopy_manager_v1> get_screencopy_manager();
     std::shared_ptr<wl_shm> get_shm();
-    std::shared_ptr<wl_output> get_output();
+
+    // 输出（显示器）列表：索引为合成器广播 wl_output global 的顺序。
+    // 越界索引返回 nullptr。
+    std::shared_ptr<wl_output> get_output(std::size_t index = 0);
+    std::size_t output_count() const { return outputs_.size(); }
 
 private:
     bool open();
@@ -52,7 +58,7 @@ private:
     // Registry objects
     std::unique_ptr<wl_display> display_;
     std::unique_ptr<wl_registry> registry_;
-    std::shared_ptr<wl_output> output_;
+    std::vector<std::shared_ptr<wl_output>> outputs_; // 多显示器：按广播顺序
     std::shared_ptr<wl_shm> shm_;
     std::shared_ptr<zwlr_screencopy_manager_v1> screencopy_manager_;
 };

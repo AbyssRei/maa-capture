@@ -3,7 +3,52 @@
 #include "maa-capture/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
 
+#include <algorithm>
+#include <vector>
+
 MWS_NS_BEGIN
+
+// ---------------------------------------------------------------------------
+// 显示器索引 → HMONITOR
+// ---------------------------------------------------------------------------
+
+// 按索引取 HMONITOR：主显示器固定排到索引 0（EnumDisplayMonitors 的枚举顺序
+// 未保证主屏在前，这里显式交换），其余按枚举顺序。index 越界返回 nullptr。
+static HMONITOR monitor_from_index(int index)
+{
+    struct EnumContext
+    {
+        std::vector<HMONITOR> monitors;
+    } ctx;
+
+    EnumDisplayMonitors(
+        nullptr,
+        nullptr,
+        [](HMONITOR hmon, HDC hdc, LPRECT rect, LPARAM lparam) -> BOOL {
+            std::ignore = hdc;
+            std::ignore = rect;
+            reinterpret_cast<EnumContext*>(lparam)->monitors.push_back(hmon);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+
+    if (ctx.monitors.empty()) {
+        return nullptr;
+    }
+
+    const HMONITOR primary = MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    if (primary) {
+        auto it = std::find(ctx.monitors.begin(), ctx.monitors.end(), primary);
+        if (it != ctx.monitors.end() && it != ctx.monitors.begin()) {
+            std::iter_swap(it, ctx.monitors.begin());
+        }
+    }
+
+    if (index < 0 || index >= static_cast<int>(ctx.monitors.size())) {
+        return nullptr;
+    }
+    return ctx.monitors[static_cast<std::size_t>(index)];
+}
 
 DesktopDupScreencap::~DesktopDupScreencap()
 {
@@ -66,9 +111,15 @@ bool DesktopDupScreencap::init()
 
 bool DesktopDupScreencap::ensure_output_for_monitor()
 {
-    // 获取目标显示器
+    // 获取目标显示器：显式索引优先，其次 hwnd 定位，均未命中走主显示器
     HMONITOR target_monitor = nullptr;
-    if (hwnd_) {
+    if (monitor_index_ >= 0) {
+        target_monitor = monitor_from_index(monitor_index_);
+        if (!target_monitor) {
+            LogWarn << "monitor index out of range, falling back to primary monitor" << VAR(monitor_index_);
+        }
+    }
+    else if (hwnd_) {
         target_monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
         if (!target_monitor) {
             LogWarn << "MonitorFromWindow failed, falling back to primary monitor";

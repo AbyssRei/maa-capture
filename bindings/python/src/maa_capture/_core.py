@@ -167,6 +167,8 @@ class Manager:
         dll.MaaWSManagerSetPipeWireTarget.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_uint32]
         dll.MaaWSManagerSetWlrSocket.restype = MaaWSBool
         dll.MaaWSManagerSetWlrSocket.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        dll.MaaWSManagerSetMonitorIndex.restype = MaaWSBool
+        dll.MaaWSManagerSetMonitorIndex.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         dll.MaaWSManagerRegisterCustomUnit.restype = MaaWSBool
         dll.MaaWSManagerRegisterCustomUnit.argtypes = [
             ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -194,6 +196,17 @@ class Manager:
                 self._handle, socket_name.encode("utf-8") if socket_name else None
             )
         )
+
+    def set_monitor_index(self, index: int) -> bool:
+        """设置整屏截图的目标显示器索引（connect() 前调用）。
+
+        - Windows：METHOD_DXGI_DESKTOP_DUP 复制的显示器；0 = 主显示器，其余按
+          EnumDisplayMonitors 顺序；设置后优先于 hwnd 定位，越界回退主显示器
+        - Linux：METHOD_WLR 截取的 wl_output（合成器广播顺序，0 = 第一个）；
+          PipeWire 的显示器选择发生在 portal 授权时，本设置不生效
+        - macOS：hwnd 为 None 时 METHOD_SCREENCAPTUREKIT 截取的 display（0 = 第一个）
+        """
+        return bool(self._dll.MaaWSManagerSetMonitorIndex(self._handle, index))
 
     # ---- 通用接口 ----
 

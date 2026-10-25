@@ -76,6 +76,11 @@ public:
         mgr_.set_wlr_socket(socket_name ? socket_name : "");
     }
 
+    void set_monitor_index(uint32_t index)
+    {
+        mgr_.set_monitor_index(index);
+    }
+
     bool connect()
     {
         return mgr_.connect();
@@ -187,6 +192,16 @@ extern "C"
             return 0;
         }
         static_cast<ManagerHandleImpl*>(handle)->set_wlr_socket(socket_name);
+        return 1;
+    }
+
+    MaaWSBool MaaWSManagerSetMonitorIndex(MaaWSManagerHandle handle, uint32_t index)
+    {
+        if (!handle) {
+            LogError << "handle is null";
+            return 0;
+        }
+        static_cast<ManagerHandleImpl*>(handle)->set_monitor_index(index);
         return 1;
     }
 
