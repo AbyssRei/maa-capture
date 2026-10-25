@@ -53,6 +53,34 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: 安装 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+          check-latest: true
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: current
+          check-latest: true
+
+      - name: 安装 Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '>=27'
+          check-latest: true
+
+      - name: 安装 .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 检查项目版本、命名和提交约定
+        run: python scripts/check-project.py
 
       - name: 安装 Linux 截图依赖
         if: runner.os == 'Linux'
@@ -64,12 +92,14 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false
+          toolchain: stable
 
       - name: 安装 Go 工具链
         # macOS 镜像未预装 Go；统一安装保证三平台版本一致
         uses: actions/setup-go@v7
         with:
           go-version: stable
+          check-latest: true
 
       - name: 缓存 Rust 依赖
         uses: Swatinem/rust-cache@v2
@@ -111,6 +141,10 @@ jobs:
             throw "未找到构建产物：$libPath"
           }
           Write-Host "产物：$libPath"
+          $env:PYTHONPATH = (Resolve-Path 'bindings/python/src').Path
+          python bindings/python/tests/test_binding.py (Resolve-Path $libPath).Path
+          if ($LASTEXITCODE -ne 0) { throw 'Python 运行时绑定验证失败' }
+          Remove-Item Env:PYTHONPATH
 
       - name: 绑定编译检查（Go / Rust / Python / NodeJS / Java / C#）
         run: |
@@ -153,10 +187,10 @@ jobs:
             bindings/python/tests/test_binding.py
           if ($LASTEXITCODE -ne 0) { throw "Python 绑定语法检查失败：$LASTEXITCODE" }
 
-          # NodeJS：npm ci 验证 koffi 在各平台可安装，node --check 做语法检查
+          # NodeJS：按兼容范围解析最新 koffi，node --check 做语法检查
           Push-Location bindings/nodejs
-          npm ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw "npm ci 失败：$LASTEXITCODE" }
+          npm install --no-package-lock --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm install 失败：$LASTEXITCODE" }
           foreach ($f in 'index.js', 'win32_helper.js', 'test.js') {
             node --check $f
             if ($LASTEXITCODE -ne 0) { throw "NodeJS 绑定语法检查失败：$f" }
@@ -165,7 +199,8 @@ jobs:
 
           # Java：JNA 运行时加载，javac 编译绑定与示例
           Push-Location bindings/java
-          javac -encoding UTF-8 -d build-classes -cp jna-5.19.1.jar MaaCapture.java Sample.java
+          ./fetch-jna.ps1
+          javac -encoding UTF-8 -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
           if ($LASTEXITCODE -ne 0) { throw "Java 绑定编译失败：$LASTEXITCODE" }
           Pop-Location
 
@@ -199,7 +234,7 @@ jobs:
           }
 
           # 源码树取自 git 跟踪文件的干净快照，避免把 CI 过程产物打进包里
-          git archive HEAD bindings sample README.md LICENSE | tar -xf - -C $staging
+          git archive HEAD include bindings sample README.md LICENSE CHANGELOG.md | tar -xf - -C $staging
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           if ($IsWindows) {
@@ -245,6 +280,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: 安装 Linux 截图依赖
         # wheel 内置的 .so 链接 pipewire/wayland，冒烟安装需运行库在场
@@ -253,9 +289,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libdrm-dev libwayland-dev
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@main
         with:
           enable-cache: false
+          version: latest
 
       - name: 下载三平台原生库
         uses: actions/download-artifact@v8
@@ -345,6 +382,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist-pypi/
 
   release:
     name: 发布 GitHub Release

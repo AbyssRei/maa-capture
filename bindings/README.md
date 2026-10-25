@@ -63,9 +63,10 @@ CGO_ENABLED=1 CC=gcc go run ./test
 ### Java（JNA）
 
 ```bash
-# jna-5.19.1.jar 已随绑定目录提供（也可自行从 Maven Central 下载）
-javac -encoding UTF-8 -cp jna-5.19.1.jar MaaCapture.java Sample.java
-java --enable-native-access=ALL-UNNAMED -Djna.library.path=build/Release -cp .;jna-5.19.1.jar maa.capture.Sample
+# 在 bindings/java 中执行，自动解析 Maven Central 最新稳定版 JNA
+pwsh ./fetch-jna.ps1
+javac -encoding UTF-8 -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
+java --enable-native-access=ALL-UNNAMED -Djna.library.path=../../build/Release -cp "build-classes;.deps/jna.jar" maa.capture.Sample
 ```
 
 ### Rust

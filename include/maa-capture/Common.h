@@ -11,7 +11,7 @@
 #include <vector>
 
 // ============================================================================
-// maa-capture - standalone Win32 screencap library
+// maa-capture - standalone cross-platform screencap library
 // Extracted from MaaFramework (https://github.com/MaaXYZ/MaaFramework)
 //   source/MaaWin32ControlUnit/Screencap/*
 // The extraction keeps the public behavior, but removes the dependency on

@@ -9,7 +9,7 @@ description = "Cross-platform screen/window capture binding: Win32 (GDI/DXGI/Fra
 readme = "README.md"
 license = "LGPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 keywords = ["screencap", "screenshot", "capture", "win32", "pipewire", "wayland", "screencapturekit", "maa"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-numpy = ["numpy>=1.22"]
+numpy = ["numpy>=2.5,<3"]
 
 [project.urls]
 Homepage = "https://github.com/AbyssRei/maa-capture"

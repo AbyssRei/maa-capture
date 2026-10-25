@@ -63,6 +63,7 @@ def test_custom_callback():
     def on_screencap(_arg, out: ImageBuffer) -> int:
         data = holder["pixels"]
         buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+        holder["buffer"] = buf  # Keep pixels alive until the native caller copies them.
         out.data = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
         out.width = holder["w"]
         out.height = holder["h"]

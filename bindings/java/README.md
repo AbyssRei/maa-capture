@@ -1,31 +1,19 @@
 # Java 绑定（JNA）
 
-对应 MaaFramework 的 `maa-framework-java`。基于 [JNA](https://github.com/java-native-access/jna)，无需 JNI 编译。
+`MaaCapture.java` 提供 C ABI 的 JNA 接口，`Sample.java` 演示自定义回调和截图管理器。
+Java 包名为 `maa.capture`，无需编译 JNI。
 
-## 文件
+在本目录执行（需要 JDK 和 PowerShell）：
 
-- `MaaCapture.java` — 绑定主体（Library 接口 + ImageBuffer/Callbacks 结构 + ScreencapManager）
-- `Sample.java` — 使用示例（外部回调单元 + 内置方式）
-
-## 依赖
-
-- `jna`（如 `io.github.java-native-access:jna:5.19.1`，或从 Maven Central 下载 `jna-5.19.1.jar`；本目录已随附该 jar）
-
-## 运行
-
-1. 构建 `maa-capture.dll`（无第三方依赖，见项目根 README）
-2. 指定 DLL 搜索路径：
-
-```
-java -Djna.library.path=D:\path\to\build\Release -cp .;jna-5.19.1.jar maa.capture.Sample
+```powershell
+./fetch-jna.ps1
+javac -encoding UTF-8 -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
+java --enable-native-access=ALL-UNNAMED -Djna.library.path=../../build/Release -cp "build-classes;.deps/jna.jar" maa.capture.Sample
 ```
 
-> JNA 默认以 C declaration 调用（x64 无 stdcall 差异），无需 W32APIOptions。
+Linux / macOS 的 classpath 分隔符为 `:`，库目录通常为 `../../build`。
+`fetch-jna.ps1` 每次从 Maven Central 的 `net.java.dev.jna:jna` 元数据解析最新稳定版，
+验证 SHA-1 后写入 `.deps/jna.jar`，不固定精确版本或提交 jar。
 
-## 两个外部接口
-
-1. **外部回调**：实现 `Callbacks`（必须实现 `screencap`），
-   经 `ScreencapManager.registerCustomUnit` 注册进测速选择器
-2. **内置方式**：`new ScreencapManager(hwnd, Methods.ALL)` → `connect()` → `screencap()`
-
-注意：`ImageBuffer.copyBytes()` 返回的像素是归一化 **BGR 三通道**（与 MaaFramework 内部约定一致）。
+先在项目根目录构建原生库。`ScreencapManager.registerCustomUnit` 接收自定义回调；
+`new ScreencapManager(hwnd, Methods.ALL)` 选择内置方式。输出像素统一为 BGR 三通道。

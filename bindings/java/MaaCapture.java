@@ -16,8 +16,8 @@ import java.util.List;
  *   1. 外部回调实现截图（对应 MaaCustomControllerCallbacks::screencap）
  *   2. Manager：内置 6 种 Win32 截图方式测速选择 + 外部单元注册
  *
- * 依赖：jna（io.github.java-native-access:jna，如 jna-5.14.0.jar）。
- * 加载：把 maa-capture.dll（连同 OpenCV 运行库）放入 JVM 的
+ * 依赖：net.java.dev.jna:jna，由 fetch-jna.ps1 从 Maven Central 解析最新稳定版。
+ * 加载：把 maa-capture.dll放入 JVM 的
  *       jna.library.path / PATH，或 java -Djna.library.path=build/Release。
  *
  * 用法：

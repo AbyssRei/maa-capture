@@ -1,20 +1,21 @@
 {
   "name": "maa-capture",
   "version": "0.4.0",
-  "description": "",
+  "description": "Node.js bindings for the maa-capture capture library",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test.js"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "LGPL-3.0-or-later",
   "type": "commonjs",
   "types": "./index.d.ts",
   "dependencies": {
-    "koffi": "^3.1.6"
+    "koffi": "^3.3.4"
   },
-  "allowScripts": {
-    "koffi@3.1.6": true
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AbyssRei/maa-capture.git"
   }
 }

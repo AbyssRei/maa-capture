@@ -1187,5 +1187,6 @@ http-client.private.env.json
 .idea/**/copilot.data.migration.*.xml
 
 
-# 项目自带文件例外：bindings/java 随附 JNA 运行时 jar（见 bindings/java/README.md）
-!bindings/java/jna-5.19.1.jar
+# Dependencies are resolved from upstream registries at build time.
+bindings/java/.deps/
+bindings/nodejs/package-lock.json
