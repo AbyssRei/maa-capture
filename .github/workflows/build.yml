@@ -1,0 +1,257 @@
+name: 构建与发布
+run-name: 构建与发布 ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 发布标签不取消在跑实例，确保发版流程完整执行
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建与检查（${{ matrix.platform }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # 三平台原生构建：Windows 为 Win32 单元（GDI/DXGI/FramePool/...），
+        # Linux 为 PipeWire + Wlr(Wayland) 单元，macOS 为 ScreenCaptureKit 单元
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            archive_ext: 7z
+          - os: ubuntu-latest
+            platform: linux-x64
+            archive_ext: tar.gz
+          - os: macos-latest
+            platform: macos-arm64
+            archive_ext: tar.gz
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Linux 截图依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libdrm-dev libwayland-dev
+
+      - name: 安装 Rust 工具链
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false
+
+      - name: 安装 Go 工具链
+        # macOS 镜像未预装 Go；统一安装保证三平台版本一致
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: 缓存 Rust 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/rust
+          # 发布标签与 main 保存缓存，PR 仅复用已有缓存
+          save-if: ${{ github.ref_type == 'tag' || github.ref == 'refs/heads/main' }}
+
+      - name: 读取版本并校验发布标签
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          IS_TAG_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          $cmakeLists = Get-Content -Raw CMakeLists.txt
+          if ($cmakeLists -notmatch 'project\s*\(\s*maa-capture\s+VERSION\s+(\d+\.\d+\.\d+)') {
+            throw '无法从 CMakeLists.txt 解析项目版本号。'
+          }
+          $version = $Matches[1]
+          if ($env:IS_TAG_PUSH -eq 'true' -and $env:RELEASE_TAG -cne "v$version") {
+            throw "发布标签 '$env:RELEASE_TAG' 与 CMake 项目版本 'v$version' 不一致。"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: 构建核心库（CMake）
+        run: |
+          # Windows 不固定 VS 生成器版本（镜像上是最新 VS），仅指定 x64；
+          # Linux/macOS 为单配置生成器，CMakeLists 已缺省 Release
+          $extra = if ($IsWindows) { @('-A', 'x64') } else { @() }
+          cmake -S . -B build @extra
+          if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败：$LASTEXITCODE" }
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "CMake 构建失败：$LASTEXITCODE" }
+
+          $libPath = if ($IsWindows) { 'build/Release/maa-capture.dll' }
+                     elseif ($IsLinux) { 'build/libmaa-capture.so' }
+                     else { 'build/libmaa-capture.dylib' }
+          if (-not (Test-Path $libPath -PathType Leaf)) {
+            throw "未找到构建产物：$libPath"
+          }
+          Write-Host "产物：$libPath"
+
+      - name: 绑定编译检查（Go / Rust / Python / NodeJS / Java / C#）
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Go：纯 Go 路径（syscall.NewLazyDLL 仅存在于 windows 目标）；非 Windows 交叉编译
+          Push-Location bindings/golang
+          if (-not (Test-Path go.mod)) {
+            go mod init maa_capture | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "go mod init 失败：$LASTEXITCODE" }
+          }
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { throw "Go 绑定编译失败：$LASTEXITCODE" }
+          Remove-Item Env:GOOS, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+          Pop-Location
+
+          # Rust：全平台 cargo check（类型检查，不链接）；Windows 额外用刚构建的
+          # 导入库做真实链接，验证 FFI 声明与导出符号一致
+          #（绑定声明 #[link(name = "user32")]，非 Windows 平台无法链接）
+          Push-Location bindings/rust
+          cargo check --locked --examples
+          if ($LASTEXITCODE -ne 0) { throw "Rust 绑定检查失败：$LASTEXITCODE" }
+          if ($IsWindows) {
+            $env:LIB = (Resolve-Path '../../build/Release').Path
+            cargo build --locked --example demo
+            if ($LASTEXITCODE -ne 0) { throw "Rust 绑定链接失败：$LASTEXITCODE" }
+          }
+          Pop-Location
+
+          # Python：ctypes 运行时加载，做语法编译检查
+          $python = if ($IsWindows) { 'python' } else { 'python3' }
+          & $python -m py_compile bindings/python/maa_capture.py bindings/python/test_python_binding.py
+          if ($LASTEXITCODE -ne 0) { throw "Python 绑定语法检查失败：$LASTEXITCODE" }
+
+          # NodeJS：npm ci 验证 koffi 在各平台可安装，node --check 做语法检查
+          Push-Location bindings/nodejs
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm ci 失败：$LASTEXITCODE" }
+          foreach ($f in 'index.js', 'win32_helper.js', 'test.js') {
+            node --check $f
+            if ($LASTEXITCODE -ne 0) { throw "NodeJS 绑定语法检查失败：$f" }
+          }
+          Pop-Location
+
+          # Java：JNA 运行时加载，javac 编译绑定与示例
+          Push-Location bindings/java
+          javac -encoding UTF-8 -d build-classes -cp jna-5.19.1.jar MaaCapture.java Sample.java
+          if ($LASTEXITCODE -ne 0) { throw "Java 绑定编译失败：$LASTEXITCODE" }
+          Pop-Location
+
+          # C#：P/Invoke 运行时加载，dotnet 编译绑定与自测工程
+          dotnet build bindings/csharp/test/test.csproj
+          if ($LASTEXITCODE -ne 0) { throw "C# 绑定编译失败：$LASTEXITCODE" }
+
+      - name: 打包并校验发布包
+        env:
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          $archive = "maa-capture-v$version-$env:PLATFORM.$env:ARCHIVE_EXT"
+
+          $binDir = if ($IsWindows) { 'build/Release' } else { 'build' }
+          $staging = 'dist/staging/maa-capture'
+          if ($IsWindows) {
+            New-Item -ItemType Directory -Force -Path "$staging/bin", "$staging/lib" | Out-Null
+            # 产物：DLL / 导入库 / 调试符号
+            Copy-Item "$binDir/maa-capture.dll" "$staging/bin/"
+            Copy-Item "$binDir/maa-capture.lib" "$staging/lib/"
+            if (Test-Path "$binDir/maa-capture.pdb") {
+              Copy-Item "$binDir/maa-capture.pdb" "$staging/bin/"
+            }
+          }
+          else {
+            New-Item -ItemType Directory -Force -Path "$staging/lib" | Out-Null
+            Copy-Item "$binDir/libmaa-capture.*" "$staging/lib/"
+          }
+
+          # 源码树取自 git 跟踪文件的干净快照，避免把 CI 过程产物打进包里
+          git archive HEAD bindings sample README.md LICENSE | tar -xf - -C $staging
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          if ($IsWindows) {
+            Get-Command 7z -ErrorAction Stop | Out-Null
+            & 7z a -t7z "dist/$archive" "$staging"
+            if ($LASTEXITCODE -ne 0) { throw "打包失败：$LASTEXITCODE" }
+            & 7z t "dist/$archive"
+            if ($LASTEXITCODE -ne 0) { throw "发布包校验失败：$LASTEXITCODE" }
+          }
+          else {
+            & tar -czf "dist/$archive" -C dist/staging maa-capture
+            if ($LASTEXITCODE -ne 0) { throw "打包失败：$LASTEXITCODE" }
+            & tar -tzf "dist/$archive" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "发布包校验失败：$LASTEXITCODE" }
+          }
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: 上传发布包
+        uses: actions/upload-artifact@v7
+        with:
+          name: maa-capture-${{ matrix.platform }}
+          path: dist/maa-capture-v*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release:
+    name: 发布 GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: 下载已验证的发布包
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          # 三个平台的产物直接合并到 dist/ 根（各 artifact 内是单个压缩包）
+          merge-multiple: true
+
+      - name: 校验发布包齐全
+        run: |
+          $version = '${{ needs.build.outputs.version }}'
+          $expected = @(
+            "dist/maa-capture-v$version-windows-x64.7z",
+            "dist/maa-capture-v$version-linux-x64.tar.gz",
+            "dist/maa-capture-v$version-macos-arm64.tar.gz"
+          )
+          foreach ($f in $expected) {
+            if (-not (Test-Path $f -PathType Leaf)) { throw "缺少发布包：$f" }
+          }
+          Write-Host "发布包齐全：$($expected -join ', ')"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*.7z
+            dist/*.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

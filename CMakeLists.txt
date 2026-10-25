@@ -21,11 +21,12 @@ set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 # 源码为 UTF-8（含中文注释）：对 MSVC 加 /utf-8，GCC/Clang 加字符集选项，
-# 避免在 GBK 代码页下误读多字节序列导致注释吞行/预处理错乱（C1020/C4819）
+# 避免在 GBK 代码页下误读多字节序列导致注释吞行/预处理错乱（C1020/C4819）。
+# 注意 GCC/Clang 的执行字符集选项是 -fexec-charset（而非 -fexecution-charset）
 if(MSVC)
     add_compile_options(/utf-8)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-finput-charset=UTF-8 -fexecution-charset=UTF-8)
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -44,24 +45,35 @@ endif()
 # ---------------------------------------------------------------------------
 # Library
 # ---------------------------------------------------------------------------
-# 按平台选择源文件：source/ 顶层为 Win32 单元，source/Linux、source/MacOS
-# 为对应平台的单元与基础设施（协议生成代码随仓库提供，无需 wayland-scanner）
+# 源文件布局：source/ 顶层平铺的是 Win32 单元 + 跨平台公共实现（下方显式列出），
+# source/Linux、source/MacOS 为对应平台的单元与基础设施
+#（协议生成代码随仓库提供，无需 wayland-scanner）
+set(MWS_COMMON_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/CustomScreencap.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/ScreencapMgr.cpp)
+
 file(GLOB_RECURSE MWS_HEADERS CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp)
 
 if(WIN32)
+    # source/*.cpp 同时覆盖公共实现与 Win32 单元
     file(GLOB MWS_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp)
 elseif(APPLE)
     enable_language(OBJCXX)
     file(GLOB MWS_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/source/MacOS/*.mm)
+    list(APPEND MWS_SOURCES ${MWS_COMMON_SOURCES})
 else()
     file(GLOB MWS_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/*.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/*.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/Protocol/*.c)
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/*.cpp)
+    # wlr-screencopy 协议生成代码位于公共头目录（WaylandHelper.h 按相对路径
+    # 引用其中的 .h），其中 -priv.c 需编入目标以提供接口符号
+    file(GLOB MWS_PROTOCOL_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/maa-capture/Linux/Protocol/*.c)
+    list(APPEND MWS_SOURCES ${MWS_PROTOCOL_SOURCES} ${MWS_COMMON_SOURCES})
 
     # Linux 截图依赖在源列表确定前检测：缺失时把对应单元裁出编译（自动降级，
     # 库仍可构建并使用外部自定义单元），MWS_*_DETECTED 供下方链接段使用
@@ -87,7 +99,7 @@ else()
             ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/MemfdBuffer.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/WaylandClient.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/WaylandHelper.cpp
-            ${CMAKE_CURRENT_SOURCE_DIR}/source/Linux/Wayland/Protocol/wlr-screencopy-priv.c)
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/maa-capture/Linux/Protocol/wlr-screencopy-priv.c)
     endif()
     if(NOT MWS_PIPEWIRE_DETECTED)
         list(REMOVE_ITEM MWS_SOURCES

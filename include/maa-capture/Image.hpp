@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 
 #include "Common.h"
