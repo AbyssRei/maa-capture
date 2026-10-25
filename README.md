@@ -71,7 +71,7 @@ maa-capture/
 > FramePool / PrintWindow 内置 **伪最小化**：窗口最小化时置为透明+点击穿透并以不激活方式还原，
 > 截图继续工作；用户激活窗口时自动恢复，退出时还原后再最小化。详见 `PseudoMinimizeHelper`。
 
-预定义组合（与 MaaFramework 的 `Win32 截图方式枚举` 取值一致）：
+预定义组合（与 MaaFramework 的 `maa-captureMethod` 取值一致）：
 
 - `Method_Foreground` = `DXGI_DesktopDup_Window | ScreenDC`
 - `Method_Background` = `FramePool | PrintWindow`

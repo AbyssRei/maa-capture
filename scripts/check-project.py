@@ -34,16 +34,19 @@ assert "codeberg.org/AbyssRei/" not in package_readme, "Obsolete repository URL 
 paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 # Construct legacy spellings so this validator does not introduce them into the tree.
 legacy = re.compile(r"Maa" + r"Win32Screencap|maa_" + r"win32_screencap|maa-" + r"win32-screencap|maa\." + r"win32\.screencap", re.I)
+retired = re.compile(r"(?:Maa" + r"Screencap|maa_" + r"screencap|maa-" + r"screencap|maa\." + r"screencap)(?![A-Za-z0-9_])", re.I)
 for name in filter(None, paths):
     path = ROOT / name
     if not path.exists():
         continue
     assert not legacy.search(name), f"Legacy path: {name}"
+    assert not retired.search(name), f"Retired project path: {name}"
     try:
         contents = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         continue
     assert not legacy.search(contents), f"Legacy project name in {name}"
+    assert not retired.search(contents), f"Retired project name in {name}"
 log = subprocess.check_output(["git", "log", "--format=%s", "HEAD"], cwd=ROOT).decode().splitlines()
 conventional = re.compile(r"(?:feat|fix|build|chore|ci|docs|style|refactor|perf|test|revert)(?:\([\w.-]+\))?!?: .+")
 assert all(conventional.fullmatch(subject) for subject in log), "Invalid Conventional Commit subject"

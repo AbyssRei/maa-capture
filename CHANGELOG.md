@@ -6,6 +6,9 @@
 
 ## 1.0.0
 
+- 项目与仓库统一命名为 `maa-capture`；Python / Rust / Go 模块名为 `maa_capture`，Java 包为 `maa.capture`。
+- 修正 Python 包正文中的主仓库链接，CI 同时验证 wheel / sdist 的元数据与 README。
+
 - 确立跨平台 C ABI、C++ 扩展接口和多语言绑定的首个稳定版。
 - 库、头文件路径、包名、命名空间和文档统一使用 maa-capture。
 - 最新稳定依赖按兼容范围或上游浮动引用解析；Java 构建时获取最新 JNA。

@@ -2,6 +2,10 @@
 
 主仓库：[AbyssRei/maa-capture](https://github.com/AbyssRei/maa-capture)。
 
+项目展示名、仓库名、CMake 目标、头文件目录及动态库名称统一使用 `maa-capture`。
+Python / Rust / Go 模块采用 `maa_capture`；Java 包为 `maa.capture`，Java 类及 C# 命名空间
+采用合法标识符 `MaaCapture`。C ABI 的 `MaaWS` 符号保持兼容。
+
 ## 版本约定
 
 项目采用 [SemVer 2.0.0](https://semver.org/lang/zh-CN/)。公共 API 包括
@@ -51,4 +55,4 @@ CMake、Python 包元数据和 `__version__`、Node.js、Rust、C# 版本必须�
 初始根提交合并 `df13393` 与 `1fe7b76`，随后依次保留 `f9e7fae`、`b0e45dd`
 两次窗口修复；其余构建修复按所属功能合并。原作者信息保留，新历史从根提交起
 统一采用新项目名称。新项目独立重新编号；重写前的历史和发行资产需先备份。
-开发版 `0.x` 标签导入时暂时关闭工作流，避免为历史版本重复发布。
+历史标签导入时暂时关闭工作流，避免为历史版本重复发布。
