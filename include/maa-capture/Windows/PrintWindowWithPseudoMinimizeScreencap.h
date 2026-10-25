@@ -1,27 +1,27 @@
 #pragma once
 
 // ============================================================================
-// FramePool + 伪最小化包装（提取自 MaaFramework
-// source/MaaWin32ControlUnit/Screencap/FramePoolWithPseudoMinimizeScreencap.h）
+// PrintWindow + 伪最小化包装（提取自 MaaFramework
+// source/MaaWin32ControlUnit/Screencap/PrintWindowWithPseudoMinimizeScreencap.h）
 // ============================================================================
 
-#include "Common.h"
-#include "FramePoolScreencap.h"
+#include "maa-capture/Common.h"
+#include "PrintWindowScreencap.h"
 #include "PseudoMinimizeHelper.h"
 
 MWS_NS_BEGIN
 
-class FramePoolWithPseudoMinimizeScreencap : public ScreencapBase
+class PrintWindowWithPseudoMinimizeScreencap : public ScreencapBase
 {
 public:
-    explicit FramePoolWithPseudoMinimizeScreencap(HWND hwnd)
+    explicit PrintWindowWithPseudoMinimizeScreencap(HWND hwnd)
         : inner_(hwnd)
         , helper_(hwnd)
     {
         helper_.start();
     }
 
-    virtual ~FramePoolWithPseudoMinimizeScreencap() override = default;
+    virtual ~PrintWindowWithPseudoMinimizeScreencap() override = default;
 
 public: // from ScreencapBase
     virtual std::optional<Image> screencap() override
@@ -41,7 +41,7 @@ public: // from ScreencapBase
     }
 
 private:
-    FramePoolScreencap inner_;
+    PrintWindowScreencap inner_;
     PseudoMinimizeHelper helper_;
 };
 

@@ -23,35 +23,22 @@
 maa-capture/
 ├── CMakeLists.txt
 ├── README.md
-├── include/maa-capture/        # 公共头文件（含两个外部接口）
-│   ├── ScreencapBase.h               # ★ 外部继承接口：截图单元抽象基类
-│   ├── MaaWSCustomScreencap.h        # ★ 外部回调接口：纯 C 契约（对应自定义控制器 screencap）
-│   ├── CustomScreencap.h             # 回调接口的 C++ 封装 + 桥接类
-│   ├── ScreencapMgr.h                # 截图管理器：注册 + 测速选择 + 截图
-│   ├── GdiScreencap.h
-│   ├── ScreenDCScreencap.h
-│   ├── PrintWindowScreencap.h
-│   ├── DesktopDupScreencap.h
-│   ├── DesktopDupWindowScreencap.h
-│   ├── FramePoolScreencap.h          # Windows.Graphics.Capture（编译期门控）
-│   ├── PseudoMinimizeHelper.h        # 伪最小化
-│   ├── PrintWindowWithPseudoMinimizeScreencap.h
-│   ├── FramePoolWithPseudoMinimizeScreencap.h
-│   ├── HwndUtils.hpp / ForegroundUtils.h
-│   ├── Common.h / Logger.h / SafeWindows.hpp / SafeDXGI.hpp / NoWarningCV.hpp
-│   ├── Linux/                          # Linux 平台单元（PipeWire / Wlr / Wayland 基础设施）
-│   │   ├── PipeWireScreencap.h
-│   │   ├── WlrScreencap.h / WaylandClient.h / WaylandHelper.h / MemfdBuffer.h
-│   │   └── Protocol/wlr-screencopy.*   # wayland-scanner 生成代码（随仓库提供）
-│   └── MacOS/ScreenCaptureKitScreencap.h
-├── source/                           # Win32 各实现 .cpp
-├── source/Linux/                     # Linux 各实现 .cpp（Wayland/ 子目录为基础实施）
-├── source/MacOS/                     # macOS 各实现 .mm
-└── sample/                           # 两个外部接口的使用示例
-    ├── external_cpp_interface.cpp    # 继承 ScreencapBase
-    ├── external_c_callback.cpp       # C 回调（对应自定义控制器 screencap），C++ 侧桥接
-    ├── external_c_only.c             # 纯 C 消费 C 回调接口
-    └── external_c_manager.c          # 纯 C 消费截图管理器 C API
+├── include/maa-capture/
+│   ├── Common.h / Image.hpp / Logger.h
+│   ├── ScreencapBase.h              # 跨平台 C++ 扩展接口
+│   ├── MaaWSCustomScreencap.h        # 跨平台 C ABI
+│   ├── CustomScreencap.h / ScreencapMgr.h
+│   ├── Windows/                    # Win32 截图单元及专用工具
+│   ├── Linux/                      # PipeWire / Wlr / Wayland / 协议代码
+│   └── MacOS/                      # ScreenCaptureKit
+├── source/
+│   ├── CustomScreencap.cpp / ScreencapMgr.cpp
+│   ├── Windows/                    # Win32 实现及内部显示器工具
+│   ├── Linux/                      # Linux 实现，含 Wayland/ 子目录
+│   └── MacOS/                      # Objective-C++ 实现
+├── bindings/                       # Python / Node.js / C# / Go / Java / Rust
+├── scripts/                        # 项目和 Python 分发包检查
+└── sample/                         # C 与 C++ 扩展接口示例
 ```
 
 ## 截图方式

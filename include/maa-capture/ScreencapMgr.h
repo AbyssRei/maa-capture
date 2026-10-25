@@ -23,7 +23,7 @@
 #include "ScreencapBase.h"
 
 #if defined(_WIN32)
-#include "SafeWindows.hpp"
+#include "Windows/SafeWindows.hpp"
 #endif
 
 #include <chrono>

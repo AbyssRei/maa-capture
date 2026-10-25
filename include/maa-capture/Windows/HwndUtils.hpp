@@ -6,9 +6,9 @@
 
 #include <utility>
 
-#include "Common.h"
-#include "Image.hpp"
-#include "Logger.h"
+#include "maa-capture/Common.h"
+#include "maa-capture/Image.hpp"
+#include "maa-capture/Logger.h"
 #include "SafeWindows.hpp"
 
 MWS_NS_BEGIN

@@ -45,8 +45,8 @@ endif()
 # ---------------------------------------------------------------------------
 # Library
 # ---------------------------------------------------------------------------
-# 源文件布局：source/ 顶层平铺的是 Win32 单元 + 跨平台公共实现（下方显式列出），
-# source/Linux、source/MacOS 为对应平台的单元与基础设施
+# 源文件布局：source/ 顶层仅保留跨平台公共实现（下方显式列出），
+# source/Windows、source/Linux、source/MacOS 分别保存平台单元与基础设施
 #（协议生成代码随仓库提供，无需 wayland-scanner）
 set(MWS_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/CustomScreencap.cpp
@@ -57,9 +57,9 @@ file(GLOB_RECURSE MWS_HEADERS CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp)
 
 if(WIN32)
-    # source/*.cpp 同时覆盖公共实现与 Win32 单元
     file(GLOB MWS_SOURCES CONFIGURE_DEPENDS
-        ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/Windows/*.cpp)
+    list(APPEND MWS_SOURCES ${MWS_COMMON_SOURCES})
 elseif(APPLE)
     enable_language(OBJCXX)
     file(GLOB MWS_SOURCES CONFIGURE_DEPENDS

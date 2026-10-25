@@ -13,7 +13,7 @@
 
 #include <thread>
 
-#include "Common.h"
+#include "maa-capture/Common.h"
 #include "SafeWindows.hpp"
 
 MWS_NS_BEGIN

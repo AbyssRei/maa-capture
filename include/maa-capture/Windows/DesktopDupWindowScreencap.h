@@ -5,7 +5,7 @@
 // source/MaaWin32ControlUnit/Screencap/DesktopDupWindowScreencap.*)
 // ============================================================================
 
-#include "Common.h"
+#include "maa-capture/Common.h"
 #include "DesktopDupScreencap.h"
 
 MWS_NS_BEGIN

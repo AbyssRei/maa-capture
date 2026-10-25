@@ -6,9 +6,9 @@
 // 支持后台截图；对活动弹窗（对话框等）做原位合成叠加。
 // ============================================================================
 
-#include "Common.h"
+#include "maa-capture/Common.h"
 #include "SafeWindows.hpp"
-#include "ScreencapBase.h"
+#include "maa-capture/ScreencapBase.h"
 
 MWS_NS_BEGIN
 

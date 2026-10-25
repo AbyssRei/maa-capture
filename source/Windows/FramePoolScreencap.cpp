@@ -1,4 +1,4 @@
-#include "maa-capture/FramePoolScreencap.h"
+#include "maa-capture/Windows/FramePoolScreencap.h"
 
 #if MWS_FRAMEPOOL_AVAILABLE
 
@@ -11,7 +11,7 @@
 
 #include <thread>
 
-#include "maa-capture/HwndUtils.hpp"
+#include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
 #include "maa-capture/Image.hpp"
 

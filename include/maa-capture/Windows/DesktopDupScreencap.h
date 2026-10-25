@@ -7,8 +7,8 @@
 // 显示器（hwnd 定位），或主显示器（两者均未指定）。
 // ============================================================================
 
-#include "Common.h"
-#include "ScreencapBase.h"
+#include "maa-capture/Common.h"
+#include "maa-capture/ScreencapBase.h"
 #include "SafeDXGI.hpp"
 
 MWS_NS_BEGIN

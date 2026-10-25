@@ -3,15 +3,15 @@
 #include "maa-capture/Logger.h"
 
 #if defined(_WIN32)
-#include "maa-capture/DesktopDupScreencap.h"
-#include "maa-capture/DesktopDupWindowScreencap.h"
-#include "maa-capture/FramePoolScreencap.h"
-#include "maa-capture/FramePoolWithPseudoMinimizeScreencap.h"
-#include "maa-capture/GdiScreencap.h"
-#include "maa-capture/PrintWindowScreencap.h"
-#include "maa-capture/PrintWindowWithPseudoMinimizeScreencap.h"
-#include "maa-capture/ScreenDCScreencap.h"
-#include "Win32MonitorUtils.hpp"
+#include "maa-capture/Windows/DesktopDupScreencap.h"
+#include "maa-capture/Windows/DesktopDupWindowScreencap.h"
+#include "maa-capture/Windows/FramePoolScreencap.h"
+#include "maa-capture/Windows/FramePoolWithPseudoMinimizeScreencap.h"
+#include "maa-capture/Windows/GdiScreencap.h"
+#include "maa-capture/Windows/PrintWindowScreencap.h"
+#include "maa-capture/Windows/PrintWindowWithPseudoMinimizeScreencap.h"
+#include "maa-capture/Windows/ScreenDCScreencap.h"
+#include "Windows/Win32MonitorUtils.hpp"
 #elif defined(__APPLE__)
 #include "maa-capture/MacOS/ScreenCaptureKitScreencap.h"
 #else

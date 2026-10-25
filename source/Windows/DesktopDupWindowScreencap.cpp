@@ -1,9 +1,9 @@
-#include "maa-capture/DesktopDupWindowScreencap.h"
+#include "maa-capture/Windows/DesktopDupWindowScreencap.h"
 
 #include <algorithm>
 
-#include "maa-capture/ForegroundUtils.h"
-#include "maa-capture/HwndUtils.hpp"
+#include "maa-capture/Windows/ForegroundUtils.h"
+#include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
 
 MWS_NS_BEGIN

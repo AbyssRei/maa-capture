@@ -13,7 +13,7 @@
 #endif
 
 #include "maa-capture/Common.h"
-#include "maa-capture/SafeWindows.hpp"
+#include "maa-capture/Windows/SafeWindows.hpp"
 
 #include <algorithm>
 #include <cstddef>

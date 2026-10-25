@@ -1,24 +1,24 @@
 #pragma once
 
 // ============================================================================
-// ScreenDC 截图单元（提取自 MaaFramework source/MaaWin32ControlUnit/Screencap/ScreenDCScreencap.*)
+// GDI 截图单元（提取自 MaaFramework source/MaaWin32ControlUnit/Screencap/GdiScreencap.*）
 // ============================================================================
 
-#include "Common.h"
+#include "maa-capture/Common.h"
 #include "SafeWindows.hpp"
-#include "ScreencapBase.h"
+#include "maa-capture/ScreencapBase.h"
 
 MWS_NS_BEGIN
 
-class ScreenDCScreencap : public ScreencapBase
+class GdiScreencap : public ScreencapBase
 {
 public:
-    explicit ScreenDCScreencap(HWND hwnd)
+    explicit GdiScreencap(HWND hwnd)
         : hwnd_(hwnd)
     {
     }
 
-    virtual ~ScreenDCScreencap() override = default;
+    virtual ~GdiScreencap() override = default;
 
 public: // from ScreencapBase
     virtual std::optional<Image> screencap() override;

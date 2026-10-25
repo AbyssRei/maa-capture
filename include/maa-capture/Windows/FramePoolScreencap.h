@@ -20,8 +20,8 @@
 #endif
 #endif
 
-#include "Common.h"
-#include "ScreencapBase.h"
+#include "maa-capture/Common.h"
+#include "maa-capture/ScreencapBase.h"
 
 #if MWS_FRAMEPOOL_AVAILABLE
 

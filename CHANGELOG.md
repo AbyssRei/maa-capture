@@ -7,6 +7,7 @@
 ## 1.0.0
 
 - 项目与仓库统一命名为 `maa-capture`；Python / Rust / Go 模块名为 `maa_capture`，Java 包为 `maa.capture`。
+- Windows 专用源码与头文件移入对应的 `Windows/` 子目录，公共接口保留在顶层。
 - 修正 Python 包正文中的主仓库链接，CI 同时验证 wheel / sdist 的元数据与 README。
 
 - 确立跨平台 C ABI、C++ 扩展接口和多语言绑定的首个稳定版。

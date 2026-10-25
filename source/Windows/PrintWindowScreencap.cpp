@@ -1,6 +1,6 @@
-#include "maa-capture/PrintWindowScreencap.h"
+#include "maa-capture/Windows/PrintWindowScreencap.h"
 
-#include "maa-capture/HwndUtils.hpp"
+#include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
 
 MWS_NS_BEGIN

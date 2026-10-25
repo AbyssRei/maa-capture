@@ -1,4 +1,4 @@
-#include "maa-capture/PseudoMinimizeHelper.h"
+#include "maa-capture/Windows/PseudoMinimizeHelper.h"
 
 #include <chrono>
 
