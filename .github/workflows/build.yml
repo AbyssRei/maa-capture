@@ -327,6 +327,9 @@ jobs:
       - name: 构建 sdist 与 wheel
         run: |
           uv build bindings/python --out-dir dist-pypi
+          if ($LASTEXITCODE -ne 0) { throw 'Python 分发包构建失败' }
+          uv run --python '>=3.12' --no-project scripts/check-python-dist.py dist-pypi
+          if ($LASTEXITCODE -ne 0) { throw 'Python 分发包仓库链接校验失败' }
 
       - name: 冒烟安装验证
         run: |

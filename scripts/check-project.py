@@ -26,6 +26,11 @@ versions = {
 assert set(versions.values()) == {version}, f"Package versions differ: {versions}"
 assert node["dependencies"]["koffi"].startswith("^")
 assert pyproject["build-system"]["requires"][0].startswith("uv_build>=")
+repository_url = "https://github.com/AbyssRei/maa-capture"
+assert all(url == repository_url for url in pyproject["project"]["urls"].values()), "Incorrect package repository URL"
+package_readme = (ROOT / "bindings/python/README.md").read_text(encoding="utf-8")
+assert f"[maa-capture]({repository_url})" in package_readme, "Incorrect package README repository link"
+assert "codeberg.org/AbyssRei/" not in package_readme, "Obsolete repository URL in package README"
 paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
 # Construct legacy spellings so this validator does not introduce them into the tree.
 legacy = re.compile(r"Maa" + r"Win32Screencap|maa_" + r"win32_screencap|maa-" + r"win32-screencap|maa\." + r"win32\.screencap", re.I)
