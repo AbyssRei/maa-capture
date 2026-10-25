@@ -1,0 +1,13 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+if(@MWS_WLR_DETECTED@ OR @MWS_PIPEWIRE_DETECTED@)
+    find_dependency(PkgConfig)
+endif()
+if(@MWS_WLR_DETECTED@)
+    pkg_check_modules(MWS_WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+endif()
+if(@MWS_PIPEWIRE_DETECTED@)
+    pkg_check_modules(MWS_PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/maa-capture-targets.cmake")
+check_required_components(maa-capture)
