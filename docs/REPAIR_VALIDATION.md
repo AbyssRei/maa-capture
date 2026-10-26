@@ -115,9 +115,10 @@ Linux/macOS 桌面实机结果仍未验证；本轮未使用 WSL 验证 Linux �
 原应用 46 组三轮矩阵、17 个因果对照的原入口、连续矩阵、生产插件 QThread/120 秒流、运行时与冻结包审计尚未重跑。
 本次原生回归覆盖相应故障路径，不替代这些应用门禁。
 
-实现 CI 成功后单独提升软件版本至 3.0.0，C ABI 保持 2；版本提交与附注标签 `v3.0.0` 分别推送，
-版本提交 CI 成功后才推送标签。标签工作流须再次验证 SDK/wheel/sdist/源码/provenance/SHA256SUMS。
-最终发布状态以[标签工作流](https://github.com/AbyssRei/maa-capture/actions?query=branch%3Av3.0.0)与[Release](https://github.com/AbyssRei/maa-capture/releases/tag/v3.0.0)为准。
+实现 CI 成功后，版本提交 `7a3e61662f72c3e4bf33c5f21cbbac35b6fe6cef` 已单独推送，将软件版本提升至 3.0.0，C ABI 保持 2。
+该提交的[完整 GitHub Actions](https://github.com/AbyssRei/maa-capture/actions/runs/40324086602)也已通过，包含全部三平台构建、源码/SDK 消费与最终 wheel 检查。
+用户随后取消标签流程；本轮未创建或推送 `v3.0.0`，未触发标签发版，源码版本提升不等于正式 Release。
+后续焦点恢复、可维护性及新发现边界的建议见 [OPTIMIZATION_RECOMMENDATIONS.md](OPTIMIZATION_RECOMMENDATIONS.md)，这些建议尚未实施。
 R5 应用依赖、审计身份和新元数据接入仍待后续执行。
 应用当前正式依赖与哈希未替换。
 

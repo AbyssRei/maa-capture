@@ -1,0 +1,243 @@
+# 后续优化建议：焦点恢复、可维护性与捕获边界
+
+日期：2026-10-26。审阅基线：`7a3e61662f72c3e4bf33c5f21cbbac35b6fe6cef`（源码版本 3.0.0，C ABI 2）。
+历史对照：`b8d155099a82b7a33ea33499baa2f272ceb06851`。
+本文件是后续建议，不代表以下改动已经实施，也不将代码审阅等同于实机验证。
+
+实现提交与版本提交的完整三平台 CI 均已通过。用户随后取消标签发布；本轮不创建或推送 `v3.0.0`，不触发标签发版。
+验证证据及尚未完成的应用/实机场景见 [REPAIR_VALIDATION.md](REPAIR_VALIDATION.md)。
+
+## 判断依据与优先级
+
+当前的像素所有权、共享窗口租约、候选事务、目标校验、安装包和资产验证值得保留，不建议整体退回历史版本。
+独立焦点恢复被删除则属于行为变化：旧版在暂停取图时仍能恢复窗口，当前实现需要后续库操作才会观察和协调。
+后续应在当前安全机制上补齐该行为，而非直接恢复旧版存在共享状态竞争的线程代码。
+
+下表的“代码确认”表示已定位实际分支或资源路径，未必已有对应平台的失败复现；
+“待测量”表示优化收益尚未证明，不能据此直接删除复制、校验或同步。
+P0 为功能/数据正确性优先，P1 为边界与维护性改进，P2 为测量后选择的性能工作。
+
+| 编号 | 优先级 | 建议 | 证据状态 |
+| --- | --- | --- | --- |
+| F1 | P0 | 恢复独立于截图频率的焦点恢复 | 当前行为与历史/上游的差异已确认 |
+| F2 | P0 | 修正 PipeWire 旧帧回放的采样标记与年龄 | 超时回放到 NEW 元数据的代码路径已确认，待 Linux 回归 |
+| F3 | P0 | 检查 Linux 共享缓冲区尺寸和乘法溢出 | 未检查的整数乘法及边界转换已确认，未执行异常尺寸实机输入 |
+| B1 | P1 | 明确日志回调的线程和异常契约 | 接收器读写/析构调用路径已确认，未观察到相关崩溃 |
+| B2 | P1 | 补齐各平台可协作等待与取消边界 | 固定等待及 Wayland roundtrip 路径已确认 |
+| B3 | P1 | 完善 Wayland 版本协商与输出移除处理 | 直接使用广播版本、忽略 global_remove 已确认 |
+| B4 | P1 | 平衡 PipeWire 全局初始化生命周期 | 构造初始化、析构未反初始化的路径已确认 |
+| B5 | P1 | 回调注册覆盖部分成功后的异常清理 | Node 注册时异常保护范围不足已确认，待故障注入 |
+| M1 | P1 | 统一手写代码格式、修正误导性注释 | 大量单行多语句与 Image 拷贝注释已确认 |
+| M2 | P1 | 明确窗口状态关系和锁边界 | 多计数、多代次、嵌套调用已确认 |
+| M3 | P1 | 生成具名功能常量与声明一致性检查 | 六语言重复功能位常量已确认 |
+| M4 | P1 | 按阶段拆分捕获与清理、保留错误因果 | connect/取图/清理共享错误状态已确认 |
+| M5 | P1 | 提升测试诊断与跨平台运行覆盖 | 当前门禁范围与缺口已确认 |
+| T1 | P2 | 减少经过测量确认的重复像素复制 | 存在多层复制，收益待测量 |
+| T2 | P2 | 减少同一操作内的重复来源查询 | 多次解析/快照路径已确认，成本待测量 |
+| T3 | P2 | 评估 FramePool 缓存的事件唤醒 | 当前 4ms 定时等待已确认，空闲成本待测量 |
+| T4 | P2 | 区分冷启动选择与持续捕获性能 | 当前单次冷样本排序已确认，策略收益待测量 |
+
+## F1：恢复独立焦点观察，保留共享租约和安全恢复
+
+依据：[PseudoMinimizeHelper.cpp](../source/Windows/PseudoMinimizeHelper.cpp) 的 `NativeOps::user_restored`、
+`ensure_not_minimized`、`stop`、`logically_minimized`，以及 [WindowStateTransaction.hpp](../source/WindowStateTransaction.hpp)。
+上游对照固定到 [MaaFramework 0fc6025](https://github.com/MaaXYZ/MaaFramework/blob/0fc6025c2fc224a171b57d89505e8d47acd2a8b1/source/MaaWin32ControlUnit/Screencap/PseudoMinimizeHelper.cpp)。
+
+- 行为目标：保持连接但暂停截图时，用户或外部程序激活目标，也能在有界的观察延迟内恢复可见和可交互状态。
+  上游约 100ms 的检查周期可以作为对照基准，不能将线程调度周期宣传成硬实时恢复承诺。
+- 恢复判据优先遵循上游“处于伪最小化且目标成为前台”的行为。程序激活不必伴随新键鼠输入。
+  当前已有恢复后前台快照/输入条件；刚才提出的“必须有新输入”进一步收紧已撤回。
+  若未来再增加排除条件，必须先有误判复现、因果对照和兼容性说明。
+- 独立观察状态按目标共享，避免每个 helper 各起一个轮询线程。观察器只在需要恢复的租约状态存续期间工作。
+  可评估事件通知或有界轮询；先保证线程和窗口生命周期，再比较空闲成本。
+- 所有观察和恢复仍通过共享事务协调，保留 HWND 生命周期验证、原 layered 属性、按位恢复、最后租约释放与恢复失败报告。
+  不得直接复制旧线程实现，也不能用普通 bool 在后台线程与宿主之间共享状态。
+- 设计时明确注册表锁、窗口状态锁、Win32 同步调用和退出等待的顺序。
+  不持注册表锁调用 Win32 或等待线程退出；验证目标属于宿主 UI 线程时的重入和停机路径，防止互等。
+
+验收至少包括：暂停取图后激活目标、无新输入的程序激活、切到其他窗口、双 helper/双 Manager 两种释放顺序、
+独立宿主线程、目标销毁、观察器退出期间的激活和恢复失败。
+“暂停取图后恢复”的用例必须直接读取 Win32 样式/透明度/最小化状态，不能调用会顺带触发恢复的库查询函数制造通过。
+记录前台 HWND、输入时间、状态和阶段；不能从一次焦点受干扰的失败反推出用户操作或库缺陷。
+
+## F2：PipeWire 超时回放必须保留原采样身份
+
+依据：[PipeWireScreencap.cpp](../source/Linux/PipeWireScreencap.cpp) 的 `capture_image` 在部分超时后继续交付 `latest_frame_`；
+[ScreencapBase.cpp](../source/ScreencapBase.cpp) 则对返回图像统一赋当前时间、递增 sample_id 并标记 `MAA_WS_SAMPLE_NEW`。
+[CaptureControl.hpp](../include/maa-capture/CaptureControl.hpp) 的 freshness 检查依赖这些字段。
+
+- 该组合存在把旧像素当作新取样发布的路径，并可能使 fresh-only/最大年龄策略错误接受回放。像素内容相同本身不能用来判定是否回放；这里的依据是超时分支明确取用了旧缓冲。
+- 建议让后端返回能够表达“实际新样本/复用样本/原取样时间”的内部结果，或在后端管理明确的样本状态；不要让公共层替所有后端推断 NEW。
+- 如保留 PipeWire 原有超时回放，必须标记 REUSED 并保持原 sample_id、sampled_at_ns 与会话身份；如果不能证明真实采样时间，则报告 UNKNOWN 并拒绝需要已知年龄的策略。
+  是否将该历史回放改为显式策略须单独作兼容性决定，不能混入整理代码的提交。
+- 默认等待、缓存复用和新鲜度拒绝的文档必须按后端说明，避免把 Windows 的验证范围推广到 Linux。
+
+验收：真实取样后注入无更新、连续超时和断流；检查原采样身份不变，fresh-only/超龄明确拒绝，
+新到帧重新标记 NEW，权限/来源/会话失效后不回放。当前为静态代码发现，尚未执行 Linux 桌面复现。
+
+## F3：Linux 缓冲区尺寸先验证，再转换和分配
+
+依据：[MemfdBuffer.cpp](../source/Linux/MemfdBuffer.cpp) 使用 `int` 的 `height * stride` 初始化 `size_`；
+[WlrScreencap.cpp](../source/Linux/WlrScreencap.cpp) 的协议回调将 uint32 尺寸传入 int 参数并创建缓冲区。
+
+- 在缩窄转换前检查 width/height/stride 的非零、类型范围、支持格式和最小行字节数。
+- 通过可检查的宽整数乘法计算总长度，同时满足地址空间、off_t 和 Wayland shm pool 的长度范围；拒绝不能表示的输入。
+- 分配失败或协议尺寸无效时，应结束当前等待并返回结构化错误，不能只记录日志后继续等待一个不会到来的成功事件。
+- 将尺寸计算抽成可在任意平台测试的纯函数；真实 fd/mmap 和协议交互仍由 Linux 测试验证。
+
+验收：零尺寸、超大尺寸、stride 小于一行、乘法溢出、缩窄边界、mmap/ftruncate 失败。
+代码审阅确认的是边界缺口，不表示已经在真实 compositor 上触发越界。
+
+## B1：日志不能成为新的异常或竞争入口
+
+依据：[Logger.h](../include/maa-capture/Logger.h) 的 `g_log_sink` 是可替换的普通全局函数指针，
+`LoggerStream` 析构直接调用接收器。
+
+- 明确接收器配置是仅允许在线程启动前设置，还是支持运行中替换；后者需要同步发布，不能并发读写普通指针。
+- 接收器可能被宿主和 FramePool 工作线程同时调用，须说明回调线程模型和重入要求。
+- 析构路径保证不传播日志回调异常；抛出的 sink 异常目前可能触发 terminate，外层 C API 的异常保护不能作为兜底。
+- 可增加日志级别过滤并避免构造关闭级别的字符串；高频日志继续限量。性能收益先测量，不引入默认记录图像或窗口标题的机制。
+
+验收：抛异常的接收器、并发写日志，以及所承诺配置模式下的替换/关闭；检查错误处理不依赖日志接收器正常工作。
+
+## B2：各平台的时限与取消能力按等待路径核实
+
+依据：[WaylandClient.cpp](../source/Linux/Wayland/WaylandClient.cpp) 的 `wl_display_roundtrip`、
+[WlrScreencap.cpp](../source/Linux/WlrScreencap.cpp) 的 capture_waiting 循环、
+[PipeWireScreencap.cpp](../source/Linux/PipeWireScreencap.cpp) 的秒级条件等待，
+以及 macOS [内容查询](../source/MacOS/MonitorSnapshot.mm) 和 [截图完成等待](../source/MacOS/ScreenCaptureKitScreencap.mm) 的固定 3/5 秒等待。
+
+- 这些等待尚未全部接入 CaptureOperation 的共享绝对 deadline 和取消检查；公共层的返回后检查不等同于等待期间可协作退出。
+- Wayland 可评估使用 display fd 与有界事件等待替代无期限 roundtrip；PipeWire 和 macOS 完成条件等待可采用剩余预算与取消唤醒。
+  正确处理 Wayland prepare/read/cancel-read、队列分发和错误，不宜只在阻塞调用外面加循环。
+- OS 请求未必能取消，但宿主等待可以与晚到结果的所有权分离；保持 macOS 当前 shared state 生命周期，避免回调引用已经退出的栈或对象。
+- 为方法行为能力建立平台矩阵，明确“可中断等待”“返回后拒绝结果”“无法硬中断”的边界，再更新能力位和文档。
+
+验收：无帧/不发完成事件、取消和完成竞争、跨候选总预算、晚到回调及停机。
+Linux/macOS 的运行验证仍须各自环境；本轮不使用 WSL，不将已有编译 CI 当作这些场景通过。
+
+## B3：Wayland globals 需要版本上限和移除语义
+
+依据：[WaylandClient.cpp](../source/Linux/Wayland/WaylandClient.cpp) 的 registry global 回调直接用广播 version 绑定，global_remove 为空。
+
+- 绑定版本不超过服务端广播和客户端接口定义所支持的版本，并明确最低必需版本。
+- 跟踪 global name 与输出代理的关系；输出或必需协议移除后使相关会话失效并返回可识别错误。
+  不将原索引静默解释为另一输出，不宣称补充了尚未实现的 Linux 持久显示器身份。
+- 将 global 变更和持有旧代理的清理顺序纳入生命周期设计。
+
+验收：服务端版本高于/低于客户端定义、必需协议缺失、输出移除/重新添加、已持有输出的捕获失败。
+参考 [Wayland 协议版本与对象模型](https://wayland.freedesktop.org/docs/book/Protocol.html)。
+
+## B4：明确 PipeWire 全局初始化的所有权
+
+依据：[PipeWireScreencap.cpp](../source/Linux/PipeWireScreencap.cpp) 构造调用 `::pw_init`，析构只 close，未配对 `pw_deinit`。
+[PipeWire 官方说明](https://docs.pipewire.org/group__pw__pipewire.html) 指出 0.3.49 起需等量 init/deinit 才完成反初始化；更早版本的生命周期不同。
+
+- 明确支持的最低 PipeWire 版本，选择与其契约一致的生命周期管理。
+- 使本库拥有的初始化引用在最后适当时机释放，避免反初始化仍有其他 Manager/宿主消费者在用的资源。
+  不能未核实版本与共享引用关系，就在每个 close 或每次 inactive 上追加全局 deinit。
+- 区分停流、关闭会话、销毁对象和释放全局引用，避免重连路径反复累积初始化引用。
+
+验收：多对象交错销毁、重复初始化失败/重连、宿主同时使用 PipeWire、反初始化后重建；配合 Linux 泄漏/资源工具确认，不预先声称已经产生持续内存增长。
+
+## B5：绑定回调注册也应是可回滚的事务
+
+依据：[Node.js index.js](../bindings/nodejs/index.js) 的 registerCustomUnit 在进入 try/finally 前就连续创建多个 koffi 回调指针。
+若中途注册抛异常，先前成功的指针尚未进入统一清理范围。
+
+- 将全部指针注册和原生注册纳入同一个资源作用域；成功后移交 Manager，失败或异常时释放已创建部分。
+- 六语言核对相同边界：部分初始化失败、原生拒绝注册、回调抛异常、像素 pin/外部分配和 Manager 销毁。
+- 每个绑定采用语言自然的资源管理方式，不为统一写法引入一套跨语言运行时框架。
+
+验收：故障注入使第二/第三个回调创建失败，并检查已经创建的指针被注销；保留原生拒绝和回调缓冲释放回归。
+
+## M1–M5：可读性和复杂度整理
+
+### M1：手写代码统一格式，注释描述真实语义
+
+[ScreencapMgr.cpp](../source/ScreencapMgr.cpp)、窗口租约、C API 及手写绑定应展开多语句单行、嵌套条件、异常和清理路径。
+先建立统一格式规则，以纯格式提交执行；生成 FFI 文件通过生成器统一处理。
+[Image.hpp](../include/maa-capture/Image.hpp) 当前默认拷贝共享缓冲，相关注释却写“深拷贝语义”，应明确默认拷贝/ROI 共享、clone 深拷贝、wrap 不拥有外部内存。
+不要以减少代码行数作为优化目标。
+
+### M2：状态关系、代次和锁层级可直接读懂
+
+明确 sessions 与 holders 的区别、generation 与窗口 lifetime_epoch 的区别、外部恢复如何影响仍存续的 helper，
+并记录每个状态转换拥有的资源、失败后的状态及恢复责任。
+事务中的 had_layered、alpha_written 等是相互独立的属性，不能强行压成单个枚举。
+递归锁是否必要须按真实调用图分析，不能统一替换普通 mutex 后再依靠运行测试发现死锁。
+
+### M3：具名常量由契约生成，减少六语言漂移
+
+[generate-ffi.py](../scripts/generate-ffi.py) 当前主要生成结构；手写绑定重复出现 `8/16/32/64/128` 等功能位。
+建议从 C 契约扩展生成受支持的常量并使用具名检查，生成声明与契约同提交。
+保留 struct_size/reserved、结构尺寸和字段偏移验证；不以“减少重复”为由省略单个可选符号缺失检查。
+
+### M4：按捕获阶段拆分，错误因果保持可追踪
+
+[ScreencapMgr.cpp](../source/ScreencapMgr.cpp) 的 connect 可拆成候选试用、显式清理、排序、正式激活及首帧保存；
+取图可拆成待交付首帧复验、真实捕获和最终发布。
+用有限且有业务含义的内部函数，不为几个分支建立通用策略框架。
+
+捕获失败和后续清理失败应区分“主要错误”与“清理错误”。当前多处共用 error_，后来的 inactive/cleanup 可能覆盖前因。
+应先明确 sticky last_error 的既有约定；可在内部保留两类事件及关联阶段，不擅自修改 C ABI 或公开错误规则。
+RAII 负责异常兜底，能失败且需要报告的清理仍显式检查返回值。
+
+### M5：测试报告场景，测试规模与改动对应
+
+[windows_desktop.cpp](../tests/windows_desktop.cpp) 的重复场景可表格化，失败报告显示器、方法、循环、阶段、实际与预期状态。
+同桌面测试串行执行，避免焦点/DXGI 会话相互干扰。保持原有像素、来源、状态恢复断言，不用重试掩盖真实失败。
+焦点控制不可用、输入受干扰、真正断言失败应区分报告，不把不可用控制记作通过。
+
+纯格式改动运行已有检查即可，不添加镜像实现的测试。
+新状态或错误边界增加针对性失败注入；Linux/macOS 需要补充能执行其事件/资源路径的测试，编译通过不代表桌面行为通过。
+
+## T1–T4：先测量，再选择性能优化
+
+### T1：审核像素复制链，保留所有权边界
+
+依据：[CustomScreencap.cpp](../source/CustomScreencap.cpp) 的回调桥在 release_frame 前复制像素；
+Manager 在连接保存首帧和 custom 交付路径又 clone；DXGI、后端缓存、绑定 bytes/Buffer 也各有复制。
+
+先按路径统计完整帧复制次数、字节量、分配和耗时，区分 C 桥已拥有像素与 C++ provider 可能返回外部视图。
+可以评估内部显式所有权结果、移动语义或不可变缓冲共享；当前 Image 提供可写 data，不能直接共享缓存给调用方后允许互相修改。
+不得删掉解除映射前复制、release_frame 前复制或外部视图的保活措施。
+验收保留帧跨下一次截图、inactive、Manager 销毁及 provider 重用缓冲的独立有效性。
+
+### T2：减少重复查询，不削弱前后来源验证
+
+依据：TargetScreencapBase 的真实捕获、待交付帧验证和缓存重放会多次 resolve_source；
+MonitorSnapshot 本身又做两次稳定性采样，Windows 还有进程身份查询，macOS 包含异步 shareable content 查询。
+
+先统计每帧查询次数与耗时，再考虑同一操作内复用不会变化的中间结果或拆分身份/拓扑/几何查询。
+保留独立的捕获前后验证及 session/窗口身份检查；不能用固定 TTL 的全局快照直接替代这些安全门禁。
+验收移动、尺寸、布局、权限和目标变化仍拒绝旧帧。
+
+### T3：评估 FramePool 事件唤醒，保留 MTA 所有权
+
+依据：[FramePoolScreencap.cpp](../source/Windows/FramePoolScreencap.cpp) 的缓存模式使用 4ms wait_for，frame_ready_ 表示到帧。
+可评估由到帧事件通知工作线程并合并重复唤醒，保留任务请求和 stop 唤醒。
+事件回调只发信号，WinRT 资源继续由现有 MTA 工作线程操作；通知状态必须有独立可靠的生命周期，不能回调捕获失效 owner。
+
+比较多 Manager 静态窗口的 CPU、唤醒数、线程/句柄和更新延迟。
+保留“静态后一次延迟更新不丢失”、退出/重连、缓存失效和后台刷新与宿主请求竞争回归；当前没有实测证据表明该修改一定更快。
+
+### T4：把选择目标与性能证据分开说明
+
+当前 connect 记录单次冷样本并排序；这可以比较冷启动连接成本，不足以证明持续捕获吞吐或 p95 延迟最佳。
+建议保留当前策略的明确描述，另行测量固定来源/负载下的连接延迟、首帧、持续延迟、CPU、线程/句柄和采样年龄。
+只有出现稳定收益且有实际需求时，才增加显式选择策略；不要在可读性重构中暗改测速次数、激活顺序或缓存默认值。
+
+## 建议的交付顺序
+
+1. F1、F2、F3 分别形成独立的功能/正确性修复，各自携带回归与结果记录；适用平台互不冒充通过。
+2. B1–B5 按资源和平台分批处理，先明确契约，再实施，保留 ABI 2 与旧库默认路径兼容检查。
+3. M1 纯格式、M2–M4 小范围结构整理分开提交，M5 的诊断随对应回归补入。
+4. T1–T4 先提交可比较的测量证据，收益成立后逐项实施；不承诺尚未测得的性能提升。
+
+提交继续使用 Conventional Commits；每批运行与改动相称的现有门禁和新增边界回归。
+新版本与发版标签另由用户决定，本建议不恢复此前已取消的标签流程。
+
+参考依据：[C++ Core Guidelines：资源与并发](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)、
+[Wayland 客户端事件循环](https://wayland.freedesktop.org/docs/html/apb.html)、
+[PipeWire 初始化](https://docs.pipewire.org/group__pw__pipewire.html)。
