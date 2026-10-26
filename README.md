@@ -34,7 +34,7 @@ with Manager(target=MonitorTarget(primary.monitor_key)) as capture:
 [API 迁移](docs/API_MIGRATION.md) · [平台几何](docs/SCREEN_CAPTURE.md) ·
 [本轮验证](docs/REPAIR_VALIDATION.md) · [原 ABI 2 验证](docs/CAPTURE_SOURCE_VALIDATION.md) · [发布](docs/RELEASING.md)
 
-后续改进与代码依据见[优化建议](docs/OPTIMIZATION_RECOMMENDATIONS.md)。
+后续改进与代码依据见[改进建议](docs/OPTIMIZATION_RECOMMENDATIONS.md)，重写的分类、职责与验收安排见[重写建议](docs/REWRITE_PLAN.md)。
 
 完整源码分发物为 `maa-capture-v<version>-source.tar.gz`；
 Python sdist 只代表 Python 分发范围。构建清单记录提交、工具链、选项和原生哈希；
