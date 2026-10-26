@@ -88,6 +88,21 @@ jobs:
           if ($LASTEXITCODE) { throw 'Build failed' }
           ctest --test-dir build-no-framepool -C Release --output-on-failure
           if ($LASTEXITCODE) { throw 'No-FramePool regression failed' }
+      - uses: actions/setup-python@v7
+        with: {python-version: '3.12'}
+      - name: Python minimum version regression
+        run: |
+          $env:PYTHONPATH = (Resolve-Path bindings/python/src).Path
+          python bindings/python/tests/test_binding.py (Resolve-Path '${{ matrix.native }}').Path
+          if ($LASTEXITCODE) { throw 'Python 3.12 regression failed' }
+      - uses: actions/setup-python@v7
+        with: {python-version: '3.x'}
+      - name: Original ABI 2 C consumer
+        run: |
+          cmake --install build --config Release --prefix build-compat-install
+          if ($LASTEXITCODE) { throw 'Install failed' }
+          python scripts/check-legacy-c-consumer.py --prefix build-compat-install
+          if ($LASTEXITCODE) { throw 'Original C caller compatibility failed' }
       - name: Binding syntax and type checks
         run: |
           cargo check --locked --manifest-path bindings/rust/Cargo.toml --examples

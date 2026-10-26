@@ -211,6 +211,10 @@ if(WIN32 AND MWS_BUILD_DESKTOP_TESTS)
     if(MSVC)
         target_compile_options(maa_capture_desktop PRIVATE /utf-8)
     endif()
+    if(MWS_BUILD_TESTS)
+        add_test(NAME windows_desktop COMMAND maa_capture_desktop)
+        set_tests_properties(windows_desktop PROPERTIES TIMEOUT 180 LABELS desktop)
+    endif()
 endif()
 
 install(TARGETS maa-capture EXPORT maa-capture-targets
