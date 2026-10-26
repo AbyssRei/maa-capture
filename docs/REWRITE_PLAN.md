@@ -2,6 +2,7 @@
 
 日期：2026-10-26。状态：设计与验收建议，尚未实施运行时代码重写。
 本库参考为 `8650535` 所记录的源码版本 3.0.0 / C ABI 2；具体问题与代码依据见 [改进清单](OPTIMIZATION_RECOMMENDATIONS.md)。
+新项目 **maafw-screencap** 的抽取范围、架构、接口、阶段与交付安排见 [抽取与扩展计划](maafw-screencap-extraction-plan.md)；本文件保留分类依据和重写原则。
 
 ## 1. 固定基线与目标
 

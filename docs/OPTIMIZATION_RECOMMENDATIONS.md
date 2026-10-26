@@ -4,6 +4,7 @@
 固定上游：MaaFramework `0fc6025c2fc224a171b57d89505e8d47acd2a8b1`，不指最新主线。
 历史对照：`b8d155099a82b7a33ea33499baa2f272ceb06851`，它已包含移植差异，不能作为未经改动的上游基线。
 重写的职责、交付与验收安排见 [REWRITE_PLAN.md](REWRITE_PLAN.md)。
+新项目 **maafw-screencap** 的具体架构与抽取步骤见 [抽取与扩展计划](maafw-screencap-extraction-plan.md)。
 本文件是后续建议，不代表以下改动已经实施，也不将代码审阅等同于实机验证。
 
 实现提交与版本提交的完整三平台 CI 均已通过。用户随后取消标签发布；本轮不创建或推送 `v3.0.0`，不触发标签发版。
