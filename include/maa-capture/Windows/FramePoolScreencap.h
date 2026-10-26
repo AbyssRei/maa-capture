@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sdkddkver.h>
+#include <atomic>
 
 // ============================================================================
 // FramePool (Windows.Graphics.Capture) 截图单元（提取自 MaaFramework
@@ -35,13 +36,17 @@ MWS_NS_BEGIN
 class FramePoolScreencap : public TargetScreencapBase
 {
 public:
-    explicit FramePoolScreencap(CaptureTarget target);
+    explicit FramePoolScreencap(CaptureTarget target, bool cache_timeout = false);
 
     virtual ~FramePoolScreencap() override;
 
 public: // from ScreencapBase
+    std::optional<CaptureFrame> screencap() override;
+    bool validate_source() override;
+    const MaaWSError& last_error() const override { return foreground_error_; }
     virtual std::optional<Image> capture_image() override;
     void inactive() override;
+    bool validate_pending_frame(const CaptureFrame&) override;
 
 private:
     struct Worker;
@@ -69,6 +74,14 @@ private:
 
     // 存储上次的窗口大小，用于检测窗口大小变化
     std::pair<int, int> last_capture_size_ = { 0, 0 };
+    std::shared_ptr<std::atomic_bool> source_closed_;
+    winrt::event_token closed_token_ {};
+    std::shared_ptr<std::atomic_bool> frame_ready_;
+    winrt::event_token arrived_token_ {};
+    bool refreshing_cache_ = false;
+    int64_t native_sample_time_ = 0;
+    RECT captured_bounds_ {};
+    MaaWSError foreground_error_ = capture_error(MAA_WS_OK,0,"");
 };
 
 MWS_NS_END
@@ -80,8 +93,8 @@ MWS_NS_BEGIN
 class FramePoolScreencap : public TargetScreencapBase
 {
 public:
-    explicit FramePoolScreencap(CaptureTarget target)
-        : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL)
+    explicit FramePoolScreencap(CaptureTarget target, bool cache_timeout = false)
+        : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL, cache_timeout)
     {
     }
 

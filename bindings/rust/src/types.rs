@@ -46,6 +46,42 @@ pub methods: u64,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct MaaWSCapturePolicy {
+pub struct_size: u32,
+pub reserved: u32,
+pub flags: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MaaWSAdvancedCapturePolicy {
+pub struct_size: u32,
+pub reserved: u32,
+pub flags: u64,
+pub max_sample_age_ns: u64,
+pub connect_timeout_ns: u64,
+pub capture_timeout_ns: u64,
+pub first_frame_timeout_ns: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MaaWSMethodBehavior {
+pub struct_size: u32,
+pub reserved: u32,
+pub method: u64,
+pub flags: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MaaWSFrameSampleInfo {
+pub struct_size: u32,
+pub flags: u32,
+pub sample_id: u64,
+pub sampled_at_ns: u64,
+pub delivered_at_ns: u64,
+pub session_id: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct MaaWSMonitorInfo {
 pub struct_size: u32,
 pub index: u32,

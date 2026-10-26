@@ -31,16 +31,24 @@ public:
     const MaaWSError& last_error() const { return error_; }
     bool fail(MaaWSError error) { error_ = error; return false; }
     void inactive();
+    std::shared_ptr<CaptureCancellation> cancellation_handle() const { return cancellation_; }
 private:
+    friend struct ScreencapMgrTestAccess;
     void build_builtin_units();
     bool validate_custom_frame(CaptureFrame& frame, uint32_t stage);
+    std::shared_ptr<CaptureOperation> begin_operation(uint32_t stage);
+    void end_operation() noexcept;
+    struct OperationGuard { ScreencapMgr& manager; ~OperationGuard() { manager.end_operation(); } };
     const CaptureOptions options_;
     std::map<std::string, std::shared_ptr<ScreencapBase>> units_;
     std::shared_ptr<ScreencapBase> selected_;
+    std::optional<CaptureFrame> pending_frame_;
     std::string selected_unit_name_;
     MaaWSError error_ = capture_error(MAA_WS_OK, 0, "");
     uint64_t next_frame_ = 0;
     uint32_t custom_valid_fields_ = 0;
     bool connected_ = false, active_ = false;
+    std::shared_ptr<CaptureCancellation> cancellation_ = std::make_shared<CaptureCancellation>();
+    uint64_t operation_epoch_ = 0;
 };
 MWS_NS_END

@@ -45,6 +45,9 @@
 #define MAA_WS_UNSUPPORTED_GEOMETRY 12u
 #define MAA_WS_CAPTURE_FAILED 13u
 #define MAA_WS_INTERNAL_ERROR 14u
+#define MAA_WS_CANCELLED 15u
+#define MAA_WS_DEADLINE_EXCEEDED 16u
+#define MAA_WS_STALE_FRAME 17u
 #define MAA_WS_STAGE_CREATE 1u
 #define MAA_WS_STAGE_ENUMERATE 2u
 #define MAA_WS_STAGE_CONNECT 3u
@@ -71,6 +74,30 @@
 #define MAA_WS_FEATURE_FRAMES 1ULL
 #define MAA_WS_FEATURE_MONITORS 2ULL
 #define MAA_WS_FEATURE_STRICT_SOURCE 4ULL
+#define MAA_WS_FEATURE_SAMPLE_INFO 8ULL
+#define MAA_WS_FEATURE_FRAMEPOOL_CACHE 16ULL
+#define MAA_WS_FEATURE_ADVANCED_POLICY 32ULL
+#define MAA_WS_FEATURE_METHOD_BEHAVIOR 64ULL
+#define MAA_WS_FEATURE_CANCELLATION 128ULL
+#define MAA_WS_FEATURE_DXGI_CACHE 256ULL
+#define MAA_WS_FEATURE_STRICT_BACKGROUND 512ULL
+#define MAA_WS_FEATURE_FRAME_FRESHNESS 1024ULL
+#define MAA_WS_FEATURE_DEADLINES 2048ULL
+#define MAA_WS_POLICY_FRAMEPOOL_CACHE 1ULL
+#define MAA_WS_POLICY_DXGI_CACHE 2ULL
+#define MAA_WS_POLICY_STRICT_BACKGROUND 4ULL
+#define MAA_WS_POLICY_FRESH_ONLY 8ULL
+#define MAA_WS_POLICY_DIAGNOSTICS 16ULL
+#define MAA_WS_BEHAVIOR_NO_ACTIVATE 1ULL
+#define MAA_WS_BEHAVIOR_MAY_ACTIVATE 2ULL
+#define MAA_WS_BEHAVIOR_PSEUDO_MINIMIZE 4ULL
+#define MAA_WS_BEHAVIOR_COOPERATIVE_WAIT 8ULL
+#define MAA_WS_BEHAVIOR_UNCANCELLABLE_CALLS 16ULL
+/* These describe sampling/delivery, never a target's rendering timestamp. */
+#define MAA_WS_SAMPLE_UNKNOWN 0u
+#define MAA_WS_SAMPLE_NEW 1u
+#define MAA_WS_SAMPLE_REUSED 2u
+#define MAA_WS_SAMPLE_CONNECT_PENDING 4u
 typedef uint8_t MaaWSBool;
 typedef uint64_t MaaWSMethod;
 typedef struct MaaWSRect_ { double x, y, width, height; } MaaWSRect;
@@ -92,6 +119,25 @@ typedef struct MaaWSCaptureOptions_ {
     MaaWSCaptureTarget target;
     uint64_t methods; /* zero = automatic selection within target scope */
 } MaaWSCaptureOptions;
+/* Additive ABI 2 extension. Existing structures and entry semantics stay fixed. */
+typedef struct MaaWSCapturePolicy_ {
+    uint32_t struct_size, reserved;
+    uint64_t flags;
+} MaaWSCapturePolicy;
+/* Durations are monotonic nanoseconds; zero disables a limit. This independent
+ * structure does not change MaaWSCapturePolicy or the old creation entries. */
+typedef struct MaaWSAdvancedCapturePolicy_ {
+    uint32_t struct_size, reserved;
+    uint64_t flags, max_sample_age_ns, connect_timeout_ns, capture_timeout_ns, first_frame_timeout_ns;
+} MaaWSAdvancedCapturePolicy;
+typedef struct MaaWSMethodBehavior_ {
+    uint32_t struct_size, reserved;
+    uint64_t method, flags;
+} MaaWSMethodBehavior;
+typedef struct MaaWSFrameSampleInfo_ {
+    uint32_t struct_size, flags;
+    uint64_t sample_id, sampled_at_ns, delivered_at_ns, session_id;
+} MaaWSFrameSampleInfo;
 typedef struct MaaWSMonitorInfo_ {
     uint32_t struct_size, index, identity_scope, primary;
     uint64_t layout_token, native_id;

@@ -21,7 +21,7 @@ std::optional<CaptureFrame> CustomScreencapBridge::screencap() {
     struct Release { MaaWSCustomScreencapCallbacks& cb; void* ctx; ~Release() { try { if (cb.release_frame) cb.release_frame(ctx); } catch (...) {} } } release { callbacks_, context_ };
     MaaWSFrameInput input {}; input.struct_size = sizeof(input); input.image.struct_size = sizeof(input.image); input.info.struct_size = sizeof(input.info);
     if (!callbacks_.screencap(context_, &input, &error_)) {
-        if (!error_.code || error_.code > MAA_WS_INTERNAL_ERROR || error_.struct_size != sizeof(error_) || !valid_text(error_.message) || !valid_text(error_.native_domain))
+        if (!error_.code || error_.code > MAA_WS_STALE_FRAME || error_.struct_size != sizeof(error_) || !valid_text(error_.message) || !valid_text(error_.native_domain))
             error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CALLBACK, "Provider capture failed or returned an invalid error");
         return {};
     }
@@ -76,7 +76,14 @@ template <typename F> MaaWSBool guarded(MaaWSManagerHandle h, uint32_t stage, F 
 extern "C" {
 uint32_t MaaWSGetAbiVersion() { return MAA_WS_ABI_VERSION; }
 uint64_t MaaWSGetApiFeatures() {
-    return MAA_WS_FEATURE_FRAMES
+    return MAA_WS_FEATURE_FRAMES | MAA_WS_FEATURE_SAMPLE_INFO | MAA_WS_FEATURE_ADVANCED_POLICY | MAA_WS_FEATURE_METHOD_BEHAVIOR
+        | MAA_WS_FEATURE_CANCELLATION | MAA_WS_FEATURE_FRAME_FRESHNESS | MAA_WS_FEATURE_DEADLINES
+#if defined(_WIN32)
+        | MAA_WS_FEATURE_DXGI_CACHE | MAA_WS_FEATURE_STRICT_BACKGROUND
+#endif
+#if defined(_WIN32) && MWS_FRAMEPOOL_AVAILABLE
+        | MAA_WS_FEATURE_FRAMEPOOL_CACHE
+#endif
 #if defined(_WIN32) || defined(__APPLE__)
         | MAA_WS_FEATURE_MONITORS | MAA_WS_FEATURE_STRICT_SOURCE
 #endif
@@ -103,6 +110,11 @@ MaaWSBool MaaWSGetMethodCapabilities(uint64_t method, MaaWSMethodCapabilities* o
     if (!sized(out)) { report(error, capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, "Invalid capability output size")); return 0; }
     try { MaaWSError e {}; const auto ok = method_capabilities(method, *out, e); report(error, e); return ok; } catch (...) { report(error, internal(MAA_WS_STAGE_CREATE)); return 0; }
 }
+MaaWSBool MaaWSGetMethodBehavior(uint64_t method, MaaWSMethodBehavior* out, MaaWSError* error) {
+    if (!sized(out)) { report(error, capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, "Invalid behavior output size")); return 0; }
+    try { MaaWSError e {}; const bool ok = method_behavior(method, *out, e); report(error,e); return ok; }
+    catch (...) { report(error,internal(MAA_WS_STAGE_CREATE)); return 0; }
+}
 MaaWSMonitorSnapshotHandle MaaWSMonitorSnapshotCreate(MaaWSError* error) {
     try { MaaWSError e {}; auto s = MonitorSnapshot::create(e); report(error, e); return s ? new MonitorSnapshot(std::move(*s)) : nullptr; }
     catch (...) { report(error, internal(MAA_WS_STAGE_ENUMERATE)); return nullptr; }
@@ -117,14 +129,41 @@ MaaWSBool MaaWSMonitorSnapshotGetInfo(MaaWSMonitorSnapshotHandle h, uint32_t ind
     auto& s = *static_cast<MonitorSnapshot*>(h); if (index >= s.items.size()) return 0; *out = s.items[index]; return 1;
 }
 MaaWSManagerHandle MaaWSManagerCreate(const MaaWSCaptureOptions* options, MaaWSError* error) {
+    const MaaWSCapturePolicy policy {sizeof(MaaWSCapturePolicy), 0, 0};
+    return MaaWSManagerCreateWithPolicy(options, &policy, error);
+}
+MaaWSManagerHandle MaaWSManagerCreateWithPolicy(const MaaWSCaptureOptions* options, const MaaWSCapturePolicy* policy, MaaWSError* error) {
     if (!sized(options) || options->reserved) { report(error, capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, "Invalid capture options size or reserved field")); return nullptr; }
+    if (!sized(policy) || policy->reserved || (policy->flags & ~MAA_WS_POLICY_FRAMEPOOL_CACHE)) {
+        report(error, capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, "Invalid capture policy size, flags or reserved field")); return nullptr;
+    }
     try {
-        CaptureOptions o { CaptureTarget(options->target), options->methods }; MaaWSError e {};
+        CaptureOptions o { CaptureTarget(options->target), options->methods, policy->flags }; MaaWSError e {};
         if (!validate_options(o, e)) { report(error, e); return nullptr; }
         auto h = std::make_unique<ManagerHandleImpl>(o); report(error, capture_error(MAA_WS_OK, 0, "")); return h.release();
     } catch (...) { report(error, internal(MAA_WS_STAGE_CREATE)); return nullptr; }
 }
 void MaaWSManagerDestroy(MaaWSManagerHandle h) { try { delete static_cast<ManagerHandleImpl*>(h); } catch (...) {} }
+MaaWSManagerHandle MaaWSManagerCreateAdvanced(const MaaWSCaptureOptions* options, const MaaWSAdvancedCapturePolicy* policy, MaaWSError* error) {
+    if (!sized(options) || options->reserved || !sized(policy) || policy->reserved) {
+        report(error,capture_error(MAA_WS_INVALID_ARGUMENT,MAA_WS_STAGE_CREATE,"Invalid advanced options or policy structure")); return nullptr;
+    }
+    try {
+        CaptureOptions o {CaptureTarget(options->target),options->methods,policy->flags,policy->max_sample_age_ns,
+            policy->connect_timeout_ns,policy->capture_timeout_ns,policy->first_frame_timeout_ns};
+        MaaWSError e {};
+        if (!validate_options(o,e)) { report(error,e); return nullptr; }
+        auto h = std::make_unique<ManagerHandleImpl>(o); report(error,capture_error(MAA_WS_OK,0,"")); return h.release();
+    } catch (...) { report(error,internal(MAA_WS_STAGE_CREATE)); return nullptr; }
+}
+MaaWSCancelHandle MaaWSManagerGetCancellationHandle(MaaWSManagerHandle h) {
+    try { return h ? new std::shared_ptr<CaptureCancellation>(manager(h)->cancellation_handle()) : nullptr; }
+    catch (...) { return nullptr; }
+}
+MaaWSBool MaaWSCancelRequest(MaaWSCancelHandle h) {
+    return h && (*static_cast<std::shared_ptr<CaptureCancellation>*>(h))->request();
+}
+void MaaWSCancelHandleDestroy(MaaWSCancelHandle h) { delete static_cast<std::shared_ptr<CaptureCancellation>*>(h); }
 MaaWSBool MaaWSManagerRegisterCustomUnit(MaaWSManagerHandle h, const char* key, uint32_t scope, uint32_t valid, const MaaWSCustomScreencapCallbacks* cb, void* ctx) {
     return guarded(h, MAA_WS_STAGE_CREATE, [&](auto& m) {
         if (!key || !sized(cb) || cb->reserved || !cb->screencap) return m.fail(capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, "Invalid callback table or key"));
@@ -150,5 +189,6 @@ MaaWSBool MaaWSFrameGetImage(MaaWSFrameHandle h, MaaWSImageView* out) {
     *out = { sizeof(*out), uint32_t(i.cols), uint32_t(i.rows), uint32_t(i.channels()), i.step, uint64_t(i.rows - 1) * i.step + uint64_t(i.cols) * i.channels(), i.data }; return 1;
 }
 MaaWSBool MaaWSFrameGetInfo(MaaWSFrameHandle h, MaaWSFrameInfo* out) { if (!h || !sized(out)) return 0; *out = static_cast<CaptureFrame*>(h)->source; return 1; }
+MaaWSBool MaaWSFrameGetSampleInfo(MaaWSFrameHandle h, MaaWSFrameSampleInfo* out) { if (!h || !sized(out)) return 0; *out = static_cast<CaptureFrame*>(h)->sample; return 1; }
 void MaaWSFrameDestroy(MaaWSFrameHandle h) { try { delete static_cast<CaptureFrame*>(h); } catch (...) {} }
 }

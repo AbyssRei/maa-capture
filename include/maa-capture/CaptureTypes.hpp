@@ -45,8 +45,16 @@ struct CaptureTarget : MaaWSCaptureTarget {
     static CaptureTarget pipewire(int32_t fd, uint32_t node, uint32_t scope = MAA_WS_SCOPE_SOURCE) { CaptureTarget t; t.type = MAA_WS_TARGET_PIPEWIRE; t.platform = MAA_WS_PLATFORM_LINUX; t.pipewire_fd = fd; t.node_id = node; t.scope = scope; return t; }
     static CaptureTarget wlr(std::string_view socket, uint32_t output) { CaptureTarget t; t.type = MAA_WS_TARGET_WLR; t.platform = MAA_WS_PLATFORM_LINUX; t.output_index = output; copy_text(t.socket_name, socket); return t; }
 };
-struct CaptureOptions { CaptureTarget target; uint64_t methods = 0; };
-struct CaptureFrame { Image image; MaaWSFrameInfo source {}; };
+struct CaptureOptions {
+    CaptureTarget target;
+    uint64_t methods = 0, policy_flags = 0, max_sample_age_ns = 0;
+    uint64_t connect_timeout_ns = 0, capture_timeout_ns = 0, first_frame_timeout_ns = 0;
+};
+struct CaptureFrame {
+    Image image;
+    MaaWSFrameInfo source {};
+    MaaWSFrameSampleInfo sample {sizeof(MaaWSFrameSampleInfo), MAA_WS_SAMPLE_UNKNOWN, 0, 0, 0, 0};
+};
 inline bool valid_frame_geometry(const MaaWSFrameInfo& i, uint32_t width, uint32_t height) {
     if ((i.valid_fields & MAA_WS_VALID_SCALE) && (!std::isfinite(i.scale_x) || !std::isfinite(i.scale_y) || i.scale_x<=0 || i.scale_y<=0)) return false;
     if ((i.valid_fields & MAA_WS_VALID_ROTATION) && i.rotation!=0 && i.rotation!=90 && i.rotation!=180 && i.rotation!=270) return false;
@@ -70,4 +78,5 @@ uint32_t current_platform();
 uint32_t target_scope(const MaaWSCaptureTarget& target);
 bool validate_options(const CaptureOptions& options, MaaWSError& error);
 bool method_capabilities(uint64_t method, MaaWSMethodCapabilities& info, MaaWSError& error);
+bool method_behavior(uint64_t method, MaaWSMethodBehavior& info, MaaWSError& error);
 MWS_NS_END

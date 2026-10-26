@@ -17,6 +17,7 @@ extern "C" {
 typedef void* MaaWSManagerHandle;
 typedef void* MaaWSFrameHandle;
 typedef void* MaaWSMonitorSnapshotHandle;
+typedef void* MaaWSCancelHandle;
 /* Table is copied. Pixel memory remains readable until release_frame returns.
  * release_frame runs after every screencap invocation, including failure.
  * It is optional for persistent provider memory. No C++ exceptions across FFI. */
@@ -31,12 +32,20 @@ MAA_WS_EXPORT uint32_t MaaWSGetAbiVersion(void);
 MAA_WS_EXPORT uint64_t MaaWSGetApiFeatures(void);
 MAA_WS_EXPORT MaaWSBool MaaWSGetRuntimeInfo(MaaWSRuntimeInfo* info);
 MAA_WS_EXPORT MaaWSBool MaaWSGetMethodCapabilities(uint64_t method, MaaWSMethodCapabilities* info, MaaWSError* error);
+MAA_WS_EXPORT MaaWSBool MaaWSGetMethodBehavior(uint64_t method, MaaWSMethodBehavior* info, MaaWSError* error);
 MAA_WS_EXPORT uint64_t MaaWSManagerGetAvailableMethods(void);
 MAA_WS_EXPORT MaaWSMonitorSnapshotHandle MaaWSMonitorSnapshotCreate(MaaWSError* error);
 MAA_WS_EXPORT void MaaWSMonitorSnapshotDestroy(MaaWSMonitorSnapshotHandle snapshot);
 MAA_WS_EXPORT MaaWSBool MaaWSMonitorSnapshotGetCount(MaaWSMonitorSnapshotHandle snapshot, uint32_t* count, uint64_t* layout_token);
 MAA_WS_EXPORT MaaWSBool MaaWSMonitorSnapshotGetInfo(MaaWSMonitorSnapshotHandle snapshot, uint32_t index, MaaWSMonitorInfo* info);
 MAA_WS_EXPORT MaaWSManagerHandle MaaWSManagerCreate(const MaaWSCaptureOptions* options, MaaWSError* error);
+MAA_WS_EXPORT MaaWSManagerHandle MaaWSManagerCreateWithPolicy(const MaaWSCaptureOptions* options, const MaaWSCapturePolicy* policy, MaaWSError* error);
+MAA_WS_EXPORT MaaWSManagerHandle MaaWSManagerCreateAdvanced(const MaaWSCaptureOptions* options, const MaaWSAdvancedCapturePolicy* policy, MaaWSError* error);
+/* Handle survives Manager destruction. Request is concurrent-safe; destruction
+ * of the same handle must not race a request. It cancels only an active call. */
+MAA_WS_EXPORT MaaWSCancelHandle MaaWSManagerGetCancellationHandle(MaaWSManagerHandle manager);
+MAA_WS_EXPORT MaaWSBool MaaWSCancelRequest(MaaWSCancelHandle cancellation);
+MAA_WS_EXPORT void MaaWSCancelHandleDestroy(MaaWSCancelHandle cancellation);
 MAA_WS_EXPORT void MaaWSManagerDestroy(MaaWSManagerHandle manager);
 MAA_WS_EXPORT MaaWSBool MaaWSManagerRegisterCustomUnit(MaaWSManagerHandle manager, const char* source_key, uint32_t scope, uint32_t valid_fields, const MaaWSCustomScreencapCallbacks* callbacks, void* context);
 MAA_WS_EXPORT MaaWSBool MaaWSManagerConnect(MaaWSManagerHandle manager);
@@ -46,6 +55,7 @@ MAA_WS_EXPORT const char* MaaWSManagerSelectedUnitName(MaaWSManagerHandle manage
 MAA_WS_EXPORT void MaaWSManagerInactive(MaaWSManagerHandle manager);
 MAA_WS_EXPORT MaaWSBool MaaWSFrameGetImage(MaaWSFrameHandle frame, MaaWSImageView* image);
 MAA_WS_EXPORT MaaWSBool MaaWSFrameGetInfo(MaaWSFrameHandle frame, MaaWSFrameInfo* info);
+MAA_WS_EXPORT MaaWSBool MaaWSFrameGetSampleInfo(MaaWSFrameHandle frame, MaaWSFrameSampleInfo* info);
 MAA_WS_EXPORT void MaaWSFrameDestroy(MaaWSFrameHandle frame);
 #ifdef __cplusplus
 }

@@ -37,6 +37,34 @@ reserved: 'uint32',
 target: MaaWSCaptureTarget,
 methods: 'uint64',
 });
+const MaaWSCapturePolicy = koffi.struct('MaaWSCapturePolicy', {
+struct_size: 'uint32',
+reserved: 'uint32',
+flags: 'uint64',
+});
+const MaaWSAdvancedCapturePolicy = koffi.struct('MaaWSAdvancedCapturePolicy', {
+struct_size: 'uint32',
+reserved: 'uint32',
+flags: 'uint64',
+max_sample_age_ns: 'uint64',
+connect_timeout_ns: 'uint64',
+capture_timeout_ns: 'uint64',
+first_frame_timeout_ns: 'uint64',
+});
+const MaaWSMethodBehavior = koffi.struct('MaaWSMethodBehavior', {
+struct_size: 'uint32',
+reserved: 'uint32',
+method: 'uint64',
+flags: 'uint64',
+});
+const MaaWSFrameSampleInfo = koffi.struct('MaaWSFrameSampleInfo', {
+struct_size: 'uint32',
+flags: 'uint32',
+sample_id: 'uint64',
+sampled_at_ns: 'uint64',
+delivered_at_ns: 'uint64',
+session_id: 'uint64',
+});
 const MaaWSMonitorInfo = koffi.struct('MaaWSMonitorInfo', {
 struct_size: 'uint32',
 index: 'uint32',
@@ -120,4 +148,4 @@ commit: koffi.array('char', 48),
 platform: koffi.array('char', 16),
 architecture: koffi.array('char', 16),
 });
-module.exports = {MaaWSRect,MaaWSError,MaaWSCaptureTarget,MaaWSCaptureOptions,MaaWSMonitorInfo,MaaWSFrameInfo,MaaWSImageView,MaaWSFrameInput,MaaWSMethodCapabilities,MaaWSRuntimeInfo};
+module.exports = {MaaWSRect,MaaWSError,MaaWSCaptureTarget,MaaWSCaptureOptions,MaaWSCapturePolicy,MaaWSAdvancedCapturePolicy,MaaWSMethodBehavior,MaaWSFrameSampleInfo,MaaWSMonitorInfo,MaaWSFrameInfo,MaaWSImageView,MaaWSFrameInput,MaaWSMethodCapabilities,MaaWSRuntimeInfo};

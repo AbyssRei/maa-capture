@@ -30,6 +30,9 @@ int main() {
     state.pixels[0] = 99;
     ok = ok && MaaWSManagerScreencap(manager,&second);
     MaaWSImageView a {}, b {}; a.struct_size = sizeof(a); b.struct_size = sizeof(b);
+    MaaWSFrameSampleInfo sample {};sample.struct_size=sizeof(sample);
+    ok = ok && MaaWSFrameGetSampleInfo(first,&sample) && sample.sample_id==0 && sample.sampled_at_ns==0
+        && sample.flags==MAA_WS_SAMPLE_CONNECT_PENDING && sample.delivered_at_ns>0;
     ok = ok && MaaWSFrameGetImage(first,&a) && MaaWSFrameGetImage(second,&b) && a.data[0] == 10 && b.data[0] == 99 && a.step == 6 && a.channels == 3;
     state.wrong = true;
     MaaWSFrameHandle rejected = reinterpret_cast<void*>(1);
@@ -38,8 +41,9 @@ int main() {
     state.wrong = false; state.short_data = true;
     ok = ok && !MaaWSManagerScreencap(manager,&rejected) && !rejected && MaaWSManagerGetLastError(manager,&error) && error.code == MAA_WS_INVALID_ARGUMENT;
     MaaWSManagerInactive(manager); MaaWSManagerInactive(manager);
-    ok = ok && state.inactive == 1 && state.released == 6;
+    ok = ok && state.inactive == 1 && state.released == 4;
     MaaWSManagerDestroy(manager);
+    ok = ok && MaaWSFrameGetSampleInfo(first,&sample) && sample.sample_id==0;
     ok = ok && a.data[0] == 10; // frame lifetime is independent of manager
     MaaWSFrameDestroy(first); MaaWSFrameDestroy(second);
     if (!ok) return 4;

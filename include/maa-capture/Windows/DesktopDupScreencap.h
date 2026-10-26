@@ -11,8 +11,8 @@ MWS_NS_BEGIN
 class DesktopDupScreencap : public TargetScreencapBase
 {
 public:
-    explicit DesktopDupScreencap(CaptureTarget target, uint64_t method = MAA_WS_METHOD_DXGI_DESKTOP_DUP)
-        : TargetScreencapBase(target, method)
+    explicit DesktopDupScreencap(CaptureTarget target, uint64_t method = MAA_WS_METHOD_DXGI_DESKTOP_DUP, bool cache_timeout = false)
+        : TargetScreencapBase(target, method, cache_timeout)
         , hwnd_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id)))
     {}
     virtual ~DesktopDupScreencap() override;

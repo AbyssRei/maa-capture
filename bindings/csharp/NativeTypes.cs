@@ -38,6 +38,34 @@ public uint reserved;
 public MaaWSCaptureTarget target;
 public ulong methods;
 }
+[StructLayout(LayoutKind.Sequential)] public struct MaaWSCapturePolicy {
+public uint struct_size;
+public uint reserved;
+public ulong flags;
+}
+[StructLayout(LayoutKind.Sequential)] public struct MaaWSAdvancedCapturePolicy {
+public uint struct_size;
+public uint reserved;
+public ulong flags;
+public ulong max_sample_age_ns;
+public ulong connect_timeout_ns;
+public ulong capture_timeout_ns;
+public ulong first_frame_timeout_ns;
+}
+[StructLayout(LayoutKind.Sequential)] public struct MaaWSMethodBehavior {
+public uint struct_size;
+public uint reserved;
+public ulong method;
+public ulong flags;
+}
+[StructLayout(LayoutKind.Sequential)] public struct MaaWSFrameSampleInfo {
+public uint struct_size;
+public uint flags;
+public ulong sample_id;
+public ulong sampled_at_ns;
+public ulong delivered_at_ns;
+public ulong session_id;
+}
 [StructLayout(LayoutKind.Sequential)] public struct MaaWSMonitorInfo {
 public uint struct_size;
 public uint index;

@@ -40,6 +40,38 @@ class MaaWSCaptureOptions(C.Structure):
         ('target', MaaWSCaptureTarget),
         ('methods', C.c_uint64),
     ]
+class MaaWSCapturePolicy(C.Structure):
+    _fields_ = [
+        ('struct_size', C.c_uint32),
+        ('reserved', C.c_uint32),
+        ('flags', C.c_uint64),
+    ]
+class MaaWSAdvancedCapturePolicy(C.Structure):
+    _fields_ = [
+        ('struct_size', C.c_uint32),
+        ('reserved', C.c_uint32),
+        ('flags', C.c_uint64),
+        ('max_sample_age_ns', C.c_uint64),
+        ('connect_timeout_ns', C.c_uint64),
+        ('capture_timeout_ns', C.c_uint64),
+        ('first_frame_timeout_ns', C.c_uint64),
+    ]
+class MaaWSMethodBehavior(C.Structure):
+    _fields_ = [
+        ('struct_size', C.c_uint32),
+        ('reserved', C.c_uint32),
+        ('method', C.c_uint64),
+        ('flags', C.c_uint64),
+    ]
+class MaaWSFrameSampleInfo(C.Structure):
+    _fields_ = [
+        ('struct_size', C.c_uint32),
+        ('flags', C.c_uint32),
+        ('sample_id', C.c_uint64),
+        ('sampled_at_ns', C.c_uint64),
+        ('delivered_at_ns', C.c_uint64),
+        ('session_id', C.c_uint64),
+    ]
 class MaaWSMonitorInfo(C.Structure):
     _fields_ = [
         ('struct_size', C.c_uint32),

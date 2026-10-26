@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <thread>
+#include <atomic>
 
 #include "maa-capture/Common.h"
 #include "SafeWindows.hpp"
@@ -39,7 +40,7 @@ inline void ensure_foreground_and_topmost(HWND hwnd)
 inline bool ensure_foreground_with_cooldown(HWND hwnd)
 {
     constexpr DWORD kForegroundRecoveryInterval = 5000;
-    static DWORD last_foreground_attempt = 0;
+    static std::atomic<DWORD> last_foreground_attempt {0};
 
     if (!hwnd || !IsWindow(hwnd)) {
         return false;
@@ -50,11 +51,11 @@ inline bool ensure_foreground_with_cooldown(HWND hwnd)
     }
 
     DWORD now = GetTickCount();
-    if (last_foreground_attempt != 0 && now - last_foreground_attempt < kForegroundRecoveryInterval) {
-        return hwnd == GetForegroundWindow();
+    DWORD previous = last_foreground_attempt.load();
+    for (;;) {
+        if (previous && now - previous < kForegroundRecoveryInterval) return hwnd == GetForegroundWindow();
+        if (last_foreground_attempt.compare_exchange_weak(previous,now)) break;
     }
-
-    last_foreground_attempt = now;
     ensure_foreground_and_topmost(hwnd);
     return hwnd == GetForegroundWindow();
 }

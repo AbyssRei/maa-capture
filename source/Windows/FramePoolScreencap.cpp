@@ -20,6 +20,17 @@
 #include "maa-capture/Image.hpp"
 
 MWS_NS_BEGIN
+namespace {
+MaaWSError framepool_error(const char* message, HRESULT code) {
+    return capture_error(code == E_ACCESSDENIED ? MAA_WS_PERMISSION_DENIED : MAA_WS_CAPTURE_FAILED,
+        MAA_WS_STAGE_CAPTURE, message, MAA_WS_METHOD_FRAMEPOOL, code, "HRESULT");
+}
+struct RefreshScope {
+    bool& flag;
+    explicit RefreshScope(bool& value) : flag(value) { flag = true; }
+    ~RefreshScope() { flag = false; }
+};
+}
 
 struct FramePoolScreencap::Worker {
     using Task = std::packaged_task<std::optional<Image>()>;
@@ -37,8 +48,23 @@ struct FramePoolScreencap::Worker {
             init.set_value();
             for (;;) {
                 std::unique_lock lock(mutex);
-                ready.wait(lock, [&] { return stop.stop_requested() || pending.has_value(); });
+                const auto requested = [&] { return stop.stop_requested() || pending.has_value(); };
+                if (owner->cache_timeout_) ready.wait_for(lock, std::chrono::milliseconds(4), requested);
+                else ready.wait(lock, requested);
                 if (stop.stop_requested() && !pending) break;
+                if (!pending) {
+                    lock.unlock();
+                    // Only this backend's worker touches WinRT resources. Use
+                    // try_lock: a host capture may hold capture_mutex_ while
+                    // waiting for its queued worker operation.
+                    std::unique_lock capture_lock(owner->capture_mutex_, std::try_to_lock);
+                    if (capture_lock && owner->cache_timeout_ && owner->cached_frame_ && owner->frame_ready_ && owner->frame_ready_->exchange(false)) {
+                        RefreshScope refresh(owner->refreshing_cache_);
+                        try { owner->TargetScreencapBase::screencap(); }
+                        catch (...) { try { owner->uninit(); } catch (...) {} }
+                    }
+                    continue;
+                }
                 Task task = std::move(*pending); pending.reset(); lock.unlock();
                 task(); // packaged_task transfers exceptions to the caller
             }
@@ -56,20 +82,61 @@ struct FramePoolScreencap::Worker {
         ready.notify_one(); return result.get();
     }
 };
-FramePoolScreencap::FramePoolScreencap(CaptureTarget target)
-    : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL)
+FramePoolScreencap::FramePoolScreencap(CaptureTarget target, bool cache_timeout)
+    : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL, cache_timeout)
     , hwnd_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id))) {}
 FramePoolScreencap::~FramePoolScreencap() { worker_.reset(); }
+std::optional<CaptureFrame> FramePoolScreencap::screencap() {
+    std::lock_guard lock(capture_mutex_);
+    auto frame = TargetScreencapBase::screencap();
+    foreground_error_ = error_; return frame;
+}
+bool FramePoolScreencap::validate_source() {
+    std::lock_guard lock(capture_mutex_);
+    const bool valid = TargetScreencapBase::validate_source();
+    foreground_error_ = error_; return valid;
+}
+bool FramePoolScreencap::validate_pending_frame(const CaptureFrame& frame) {
+    std::lock_guard lock(capture_mutex_);
+    struct Report {FramePoolScreencap& owner;~Report(){if(!owner.refreshing_cache_)owner.foreground_error_=owner.error_;}} report{*this};
+    if (!TargetScreencapBase::validate_pending_frame(frame)) return false;
+    if (source_closed_ && source_closed_->load()) {
+        error_ = capture_error(MAA_WS_TARGET_CHANGED, MAA_WS_STAGE_CAPTURE, "FramePool item closed before publication", method_); return false;
+    }
+    RECT bounds {};
+    if (FAILED(DwmGetWindowAttribute(hwnd_, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) && !GetWindowRect(hwnd_, &bounds)) {
+        error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "Cannot validate FramePool crop", method_, GetLastError(), "Win32"); return false;
+    }
+    if (!EqualRect(&bounds, &captured_bounds_)) {
+        error_ = capture_error(MAA_WS_LAYOUT_CHANGED, MAA_WS_STAGE_CAPTURE, "FramePool crop changed before publication", method_); return false;
+    }
+    return true;
+}
 void FramePoolScreencap::inactive() {
+    std::lock_guard lock(capture_mutex_);
     if (worker_) worker_->invoke([this]() -> std::optional<Image> { uninit(); return {}; });
     worker_.reset();
+    invalidate_session();
 }
 std::optional<Image> FramePoolScreencap::capture_image() {
     try {
+        if (refreshing_cache_) return capture_on_worker();
         if (!worker_) worker_ = std::make_unique<Worker>(this);
-        return worker_->invoke([this] { return capture_on_worker(); });
+        return worker_->invoke([this] {
+            // Catch an arrival that raced with the host's request before it
+            // drains the old queue. It belongs to this already validated
+            // session and passes the same source/size publication checks.
+            if (cache_timeout_ && cached_frame_ && frame_ready_ && frame_ready_->exchange(false)) {
+                RefreshScope refresh(refreshing_cache_);
+                auto queued = capture_on_worker();
+                if (queued || error_.code != MAA_WS_TIMEOUT) return queued;
+            }
+            error_ = capture_error(MAA_WS_OK, 0, "");
+            return capture_on_worker();
+        });
     } catch (const winrt::hresult_error& e) {
-        error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "FramePool worker failed", method_, e.code(), "HRESULT");
+        invalidate_session();
+        error_ = framepool_error("FramePool worker failed", e.code());
         return {};
     }
 }
@@ -97,34 +164,60 @@ std::optional<Image> FramePoolScreencap::capture_on_worker()
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame frame = nullptr;
 
     try {
+        if (refreshing_cache_) frame = cap_frame_pool_.TryGetNextFrame();
+        else {
         // 先清空 FramePool 中可能残留的旧帧
-        while (auto old_frame = cap_frame_pool_.TryGetNextFrame()) {
+        for (unsigned drained = 0; drained < 16; ++drained) {
+            auto old_frame = cap_frame_pool_.TryGetNextFrame();
+            if (!old_frame) break;
             old_frame.Close();
+            if (drained == 15) {
+                // A continuously refilling queue is not a no-update timeout;
+                // never mask it with a replay or spin without a bound.
+                error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "FramePool queue did not drain within its frame budget", method_);
+                uninit(); return {};
+            }
         }
 
         // 等待新帧到来
         using namespace std::chrono_literals;
         auto start_time = std::chrono::steady_clock::now();
         while (duration_since(start_time) < 2000ms) {
+            if (operation_ && !operation_->check(error_,method_)) return {};
             std::this_thread::sleep_for(2ms);
             frame = cap_frame_pool_.TryGetNextFrame();
             if (frame) {
                 break;
             }
         }
+        }
     }
     catch (const winrt::hresult_error& e) {
         LogError << "Failed to get frame" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool failed to get a frame", e.code());
         uninit();
         return std::nullopt;
     }
 
     if (!frame) {
+        if (source_closed_ && source_closed_->load()) {
+            error_ = capture_error(MAA_WS_TARGET_CHANGED, MAA_WS_STAGE_CAPTURE, "FramePool capture item closed", method_);
+            uninit(); return {};
+        }
+        const auto removed = d3d_device_->GetDeviceRemovedReason();
+        if (FAILED(removed)) {
+            error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "FramePool device was lost", method_, removed, "HRESULT");
+            uninit(); return {};
+        }
         error_ = capture_error(MAA_WS_TIMEOUT, MAA_WS_STAGE_CAPTURE, "FramePool timed out", method_);
         return std::nullopt;
     }
 
     auto surface = frame.Surface();
+    const auto native_time = frame.SystemRelativeTime().count();
+    if (native_time <= native_sample_time_) {
+        error_ = capture_error(MAA_WS_TIMEOUT, MAA_WS_STAGE_CAPTURE, "FramePool had no newer native sample", method_); return {};
+    }
     if (!surface) {
         LogError << "frame.Surface() is null";
         return std::nullopt;
@@ -140,7 +233,17 @@ std::optional<Image> FramePoolScreencap::capture_on_worker()
     HRESULT ret = access->GetInterface(winrt::guid_of<ID3D11Texture2D>(), texture.put_void());
     if (FAILED(ret)) {
         LogError << "GetInterface ID3D11Texture2D failed" << VAR(ret);
+        error_ = framepool_error("FramePool texture interface failed", ret);
         return std::nullopt;
+    }
+
+    D3D11_TEXTURE2D_DESC captured_desc {}; texture->GetDesc(&captured_desc);
+    const auto content_size = frame.ContentSize();
+    if (content_size.Width != last_capture_size_.first || content_size.Height != last_capture_size_.second
+        || content_size.Width <= 0 || content_size.Height <= 0
+        || captured_desc.Width != UINT(content_size.Width) || captured_desc.Height != UINT(content_size.Height)) {
+        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "FramePool delivered a texture from an old content size", method_);
+        uninit(); return {};
     }
 
     if (!readable_texture_ && !init_texture(texture)) {
@@ -153,6 +256,7 @@ std::optional<Image> FramePoolScreencap::capture_on_worker()
     ret = d3d_context_->Map(readable_texture_.get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(ret)) {
         LogError << "Map failed" << VAR(ret);
+        error_ = framepool_error("FramePool texture mapping failed", ret);
         return std::nullopt;
     }
     OnScopeLeave([&]() { d3d_context_->Unmap(readable_texture_.get(), 0); });
@@ -198,6 +302,8 @@ std::optional<Image> FramePoolScreencap::capture_on_worker()
     Image image = raw.roi(client_roi);
 
     Image result = bgra_to_bgr(image);
+    captured_bounds_ = frame_rect;
+    native_sample_time_ = native_time;
     return result;
 }
 
@@ -218,6 +324,7 @@ bool FramePoolScreencap::init()
 
     if (FAILED(ret)) {
         LogError << "D3D11CreateDeviceAndSwapChain failed" << VAR(ret);
+        error_ = framepool_error("FramePool device creation failed", ret);
         return false;
     }
 
@@ -235,10 +342,12 @@ bool FramePoolScreencap::init()
     }
     catch (const winrt::hresult_error& e) {
         LogError << "Failed to create GraphicsCaptureItem" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool capture item creation failed", e.code());
         return false;
     }
     if (FAILED(ret)) {
         LogError << "CreateForWindow GraphicsCaptureItem failed" << VAR(ret);
+        error_ = framepool_error("FramePool window item creation failed", ret);
         return false;
     }
 
@@ -246,6 +355,8 @@ bool FramePoolScreencap::init()
         LogError << "cap_item_ is null after CreateForWindow";
         return false;
     }
+    source_closed_ = std::make_shared<std::atomic_bool>(false);
+    closed_token_ = cap_item_.Closed([closed = source_closed_](auto&&, auto&&) { closed->store(true); });
 
     auto item_size = cap_item_.Size();
     if (item_size.Width <= 0 || item_size.Height <= 0) {
@@ -268,6 +379,7 @@ bool FramePoolScreencap::init()
     ret = CreateDirect3D11DeviceFromDXGIDevice(dxgi_device.get(), inspectable.put());
     if (FAILED(ret)) {
         LogError << "CreateDirect3D11DeviceFromDXGIDevice failed" << VAR(ret);
+        error_ = framepool_error("FramePool device interop failed", ret);
         return false;
     }
 
@@ -286,6 +398,7 @@ bool FramePoolScreencap::init()
     }
     catch (const winrt::hresult_error& e) {
         LogError << "Direct3D11CaptureFramePool::Create failed" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool creation failed", e.code());
         return false;
     }
 
@@ -293,12 +406,15 @@ bool FramePoolScreencap::init()
         LogError << "Direct3D11CaptureFramePool::Create returned null";
         return false;
     }
+    frame_ready_ = std::make_shared<std::atomic_bool>(false);
+    arrived_token_ = cap_frame_pool_.FrameArrived([ready = frame_ready_](auto&&, auto&&) { ready->store(true); });
 
     try {
         cap_session_ = cap_frame_pool_.CreateCaptureSession(cap_item_);
     }
     catch (const winrt::hresult_error& e) {
         LogError << "CreateCaptureSession failed" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool session creation failed", e.code());
         return false;
     }
     if (!cap_session_) {
@@ -320,6 +436,7 @@ bool FramePoolScreencap::init()
     }
     catch (const winrt::hresult_error& e) {
         LogError << "StartCapture failed" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool session start failed", e.code());
         return false;
     }
 
@@ -335,6 +452,9 @@ bool FramePoolScreencap::init()
 
 void FramePoolScreencap::uninit()
 {
+    invalidate_session();
+    native_sample_time_ = 0;
+    if (cap_item_ && source_closed_) { cap_item_.Closed(closed_token_); source_closed_.reset(); }
     if (cap_session_) {
         try {
             cap_session_.Close();
@@ -346,6 +466,7 @@ void FramePoolScreencap::uninit()
     }
 
     if (cap_frame_pool_) {
+        if (frame_ready_) { cap_frame_pool_.FrameArrived(arrived_token_); frame_ready_.reset(); }
         try {
             cap_frame_pool_.Close();
         }
@@ -380,6 +501,7 @@ bool FramePoolScreencap::check_and_handle_size_changed()
     }
     catch (const winrt::hresult_error& e) {
         LogError << "Failed to get capture item size" << VAR(e.code()) << VAR(winrt::to_string(e.message()));
+        error_ = framepool_error("FramePool item size query failed", e.code());
         uninit();
         return false;
     }
@@ -420,6 +542,7 @@ bool FramePoolScreencap::init_texture(winrt::com_ptr<ID3D11Texture2D> raw_textur
     HRESULT ret = d3d_device_->CreateTexture2D(&texture_desc_, NULL, readable_texture_.put());
     if (FAILED(ret)) {
         LogError << "CreateTexture2D failed" << VAR(ret);
+        error_ = framepool_error("FramePool staging texture creation failed", ret);
         return false;
     }
 

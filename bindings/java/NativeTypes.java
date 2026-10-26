@@ -50,6 +50,46 @@ public long methods;
 public MaaWSCaptureOptions() { super(); }
 public MaaWSCaptureOptions(Pointer p) { super(p); read(); }
 }
+@Structure.FieldOrder({"struct_size","reserved","flags"})
+public static class MaaWSCapturePolicy extends Structure {
+public int struct_size;
+public int reserved;
+public long flags;
+public MaaWSCapturePolicy() { super(); }
+public MaaWSCapturePolicy(Pointer p) { super(p); read(); }
+}
+@Structure.FieldOrder({"struct_size","reserved","flags","max_sample_age_ns","connect_timeout_ns","capture_timeout_ns","first_frame_timeout_ns"})
+public static class MaaWSAdvancedCapturePolicy extends Structure {
+public int struct_size;
+public int reserved;
+public long flags;
+public long max_sample_age_ns;
+public long connect_timeout_ns;
+public long capture_timeout_ns;
+public long first_frame_timeout_ns;
+public MaaWSAdvancedCapturePolicy() { super(); }
+public MaaWSAdvancedCapturePolicy(Pointer p) { super(p); read(); }
+}
+@Structure.FieldOrder({"struct_size","reserved","method","flags"})
+public static class MaaWSMethodBehavior extends Structure {
+public int struct_size;
+public int reserved;
+public long method;
+public long flags;
+public MaaWSMethodBehavior() { super(); }
+public MaaWSMethodBehavior(Pointer p) { super(p); read(); }
+}
+@Structure.FieldOrder({"struct_size","flags","sample_id","sampled_at_ns","delivered_at_ns","session_id"})
+public static class MaaWSFrameSampleInfo extends Structure {
+public int struct_size;
+public int flags;
+public long sample_id;
+public long sampled_at_ns;
+public long delivered_at_ns;
+public long session_id;
+public MaaWSFrameSampleInfo() { super(); }
+public MaaWSFrameSampleInfo(Pointer p) { super(p); read(); }
+}
 @Structure.FieldOrder({"struct_size","index","identity_scope","primary","layout_token","native_id","desktop_rect","coordinate_unit","coordinate_space","axis","valid_fields","pixel_width","pixel_height","rotation","reserved","scale_x","scale_y","monitor_key","name"})
 public static class MaaWSMonitorInfo extends Structure {
 public int struct_size;

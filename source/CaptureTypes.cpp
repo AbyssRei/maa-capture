@@ -32,9 +32,34 @@ bool method_capabilities(uint64_t method, MaaWSMethodCapabilities& i, MaaWSError
     if (method == Method_ScreenDC || method == Method_DXGI_DesktopDup_Window) i.flags = MAA_WS_LIMIT_VISIBLE_DESKTOP;
     e = capture_error(MAA_WS_OK, 0, ""); return true;
 }
+bool method_behavior(uint64_t method, MaaWSMethodBehavior& i, MaaWSError& e) {
+    MaaWSMethodCapabilities capabilities {};
+    if (!method_capabilities(method, capabilities, e)) return false;
+    i = {sizeof(i), 0, method, 0};
+    if (method < Method_PipeWire) {
+        i.flags = method == Method_ScreenDC || method == Method_DXGI_DesktopDup_Window
+            ? MAA_WS_BEHAVIOR_MAY_ACTIVATE : MAA_WS_BEHAVIOR_NO_ACTIVATE;
+        i.flags |= MAA_WS_BEHAVIOR_UNCANCELLABLE_CALLS;
+        if (method == Method_FramePool || method == Method_PrintWindow) i.flags |= MAA_WS_BEHAVIOR_PSEUDO_MINIMIZE;
+        if (method == Method_FramePool || method == Method_DXGI_DesktopDup || method == Method_DXGI_DesktopDup_Window)
+            i.flags |= MAA_WS_BEHAVIOR_COOPERATIVE_WAIT;
+    }
+    return true;
+}
 bool validate_options(const CaptureOptions& o, MaaWSError& e) {
     const auto& t = o.target;
     const auto invalid = [&](const char* text) { e = capture_error(MAA_WS_INVALID_ARGUMENT, MAA_WS_STAGE_CREATE, text); return false; };
+    if (o.policy_flags & ~31ULL) return invalid("Unknown capture policy flags");
+    if ((o.policy_flags & MAA_WS_POLICY_FRAMEPOOL_CACHE) && (current_platform() != MAA_WS_PLATFORM_WINDOWS || !MWS_FRAMEPOOL_AVAILABLE ||
+        t.type != MAA_WS_TARGET_WINDOW || (o.methods && !(o.methods & Method_FramePool)))) {
+        e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "FramePool caching requires an available authorized FramePool window backend"); return false;
+    }
+    if ((o.policy_flags & (MAA_WS_POLICY_DXGI_CACHE | MAA_WS_POLICY_STRICT_BACKGROUND)) && current_platform() != MAA_WS_PLATFORM_WINDOWS) {
+        e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "Requested policy requires Windows native backends"); return false;
+    }
+    if ((o.max_sample_age_ns || (o.policy_flags & MAA_WS_POLICY_FRESH_ONLY)) && t.type == MAA_WS_TARGET_CUSTOM) {
+        e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "Custom providers cannot certify native sampling freshness"); return false;
+    }
     if (t.struct_size != sizeof(MaaWSCaptureTarget) || t.reserved ||
         !valid_text(t.source_key) || !valid_text(t.socket_name)) return invalid("Invalid target size, reserved field or UTF-8 string");
     if (!target_scope(t) || (target_scope(t) & (target_scope(t) - 1)) || target_scope(t) > MAA_WS_SCOPE_UNKNOWN) return invalid("Invalid target type or scope");
@@ -53,6 +78,9 @@ bool validate_options(const CaptureOptions& o, MaaWSError& e) {
     case MAA_WS_TARGET_CUSTOM:
         if (!t.source_key[0] || t.window_id || t.process_id || t.pipewire_fd || t.node_id || t.output_index || t.socket_name[0]) return invalid("Custom requires source key and declared scope");
         if (o.methods) return invalid("Custom targets do not accept builtin method bits");
+        if (o.policy_flags & (MAA_WS_POLICY_STRICT_BACKGROUND | MAA_WS_POLICY_DXGI_CACHE)) {
+            e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "Custom provider behavior cannot satisfy native policies"); return false;
+        }
         return true;
     case MAA_WS_TARGET_PIPEWIRE:
         if (t.window_id || t.process_id || t.source_key[0] || t.output_index || t.socket_name[0] || t.pipewire_fd < -1 || (!t.node_id && t.pipewire_fd < 0)) return invalid("Invalid PipeWire target");
@@ -75,6 +103,19 @@ bool validate_options(const CaptureOptions& o, MaaWSError& e) {
     }
     if ((o.methods && (o.methods & ~candidates)) || !candidates) {
         e = capture_error(MAA_WS_METHOD_UNAVAILABLE, MAA_WS_STAGE_CREATE, "Requested method is unknown, unbuilt, or outside target scope", o.methods); return false;
+    }
+    candidates = o.methods ? o.methods : candidates;
+    if (o.policy_flags & MAA_WS_POLICY_STRICT_BACKGROUND) {
+        uint64_t safe = 0;
+        for (uint64_t bit = 1; bit <= Method_ScreenCaptureKit; bit <<= 1) if (candidates & bit) {
+            MaaWSMethodBehavior behavior {}; method_behavior(bit, behavior, e);
+            if (behavior.flags & MAA_WS_BEHAVIOR_NO_ACTIVATE) safe |= bit;
+        }
+        candidates = safe;
+        if (!candidates) { e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "No authorized method satisfies strict background policy", o.methods); return false; }
+    }
+    if ((o.policy_flags & MAA_WS_POLICY_DXGI_CACHE) && !(candidates & (Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window))) {
+        e = capture_error(MAA_WS_UNSUPPORTED_OPTION, MAA_WS_STAGE_CREATE, "DXGI caching requires an authorized DXGI backend after policy filtering"); return false;
     }
     e = capture_error(MAA_WS_OK, 0, ""); return true;
 }

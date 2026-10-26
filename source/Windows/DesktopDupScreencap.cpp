@@ -2,6 +2,7 @@
 
 #include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
+#include <chrono>
 
 MWS_NS_BEGIN
 
@@ -35,9 +36,10 @@ std::optional<Image> DesktopDupScreencap::capture_image()
                 const auto& br = *(opt->end<Pixel4>() - 1);
                 if (br[3] == 255) { // only check alpha
                     output_just_initialized_ = false;
-                    break;
+                    return bgra_to_bgr(*opt); // retain the only valid static first sample
                 }
             }
+            if (operation_ && !operation_->check(error_,method_)) return {};
             LogWarn << "blank image, continue";
         }
     }
@@ -228,6 +230,8 @@ bool DesktopDupScreencap::init_texture(ID3D11Texture2D* raw_texture)
 void DesktopDupScreencap::uninit()
 {
     LogFunc;
+    invalidate_session();
+    current_monitor_ = nullptr; output_layout_ = 0; output_just_initialized_ = false;
 
     if (readable_texture_) {
         readable_texture_->Release();
@@ -272,21 +276,29 @@ std::optional<Image> DesktopDupScreencap::screencap_impl()
 
     DXGI_OUTDUPL_FRAME_INFO frame_info { 0 };
     IDXGIResource* desktop_resource = nullptr;
-    ret = dxgi_dup_->AcquireNextFrame(2000, &frame_info, &desktop_resource);
+    const auto wait_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    do {
+        if (operation_ && !operation_->check(error_,method_)) return {};
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(wait_until - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) { ret = DXGI_ERROR_WAIT_TIMEOUT; break; }
+        const auto poll = std::min<uint32_t>(uint32_t(std::min<int64_t>(remaining,20)), operation_ ? operation_->poll_ms() : 20);
+        ret = dxgi_dup_->AcquireNextFrame(poll,&frame_info,&desktop_resource);
+    } while (ret == DXGI_ERROR_WAIT_TIMEOUT);
+    if (operation_ && !operation_->check(error_,method_)) {
+        if (SUCCEEDED(ret)) { dxgi_dup_->ReleaseFrame(); if (desktop_resource) desktop_resource->Release(); }
+        return {};
+    }
     if (ret == DXGI_ERROR_ACCESS_LOST) {
         LogWarn << "Desktop duplication access lost, reinitializing";
-        if (dxgi_dup_) {
-            dxgi_dup_->Release();
-            dxgi_dup_ = nullptr;
-        }
-        if (readable_texture_) {
-            readable_texture_->Release();
-            readable_texture_ = nullptr;
-        }
-        current_monitor_ = nullptr;
+        error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "Desktop duplication access lost", method_,ret,"HRESULT");
+        uninit();
         return std::nullopt;
     }
     if (FAILED(ret)) {
+        if (ret == DXGI_ERROR_WAIT_TIMEOUT && FAILED(d3d_device_->GetDeviceRemovedReason())) {
+            error_ = capture_error(MAA_WS_CAPTURE_FAILED,MAA_WS_STAGE_CAPTURE,"DXGI device was lost",method_,d3d_device_->GetDeviceRemovedReason(),"HRESULT");
+            uninit(); return {};
+        }
         error_ = capture_error(ret == DXGI_ERROR_WAIT_TIMEOUT ? MAA_WS_TIMEOUT : MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "AcquireNextFrame failed", method_, ret, "HRESULT");
         LogError << "AcquireNextFrame failed" << VAR(ret);
         return std::nullopt;
@@ -324,6 +336,7 @@ std::optional<Image> DesktopDupScreencap::screencap_impl()
     ret = d3d_context_->Map(readable_texture_, 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(ret)) {
         LogError << "Map failed" << VAR(ret);
+        error_ = capture_error(MAA_WS_CAPTURE_FAILED,MAA_WS_STAGE_CAPTURE,"DXGI texture map failed",method_,ret,"HRESULT");
         return std::nullopt;
     }
     OnScopeLeave([&]() { d3d_context_->Unmap(readable_texture_, 0); });

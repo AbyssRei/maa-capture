@@ -1,8 +1,10 @@
 #include "CaptureInternal.hpp"
 #include <chrono>
 #include <cstring>
+#include "maa-capture/Logger.h"
 #if defined(_WIN32)
 #include "maa-capture/Windows/SafeWindows.hpp"
+#include "maa-capture/Windows/PseudoMinimizeHelper.h"
 #endif
 namespace mws::detail {
 #if !defined(__APPLE__)
@@ -69,7 +71,54 @@ bool resolve_source(const CaptureTarget& t, MaaWSFrameInfo& i, uint64_t& identit
 #endif
 }
 namespace mws {
+void TargetScreencapBase::invalidate_cache(const char* reason) {
+    if (cached_frame_ && diagnostics_) {
+        const auto count = ++invalidation_count_;
+        if (count <= 4 || !(count & (count - 1))) LogDebug << "event=cache_invalidated method=" << method_ << " reason=" << reason << " count=" << count;
+    }
+    cached_frame_.reset();
+}
+void TargetScreencapBase::invalidate_session() { invalidate_cache("session"); ++capture_session_; }
+bool TargetScreencapBase::validate_window_lifetime() {
+#if defined(_WIN32)
+    if (target_.type == MAA_WS_TARGET_WINDOW) {
+        if (!window_lifetime_) window_lifetime_ = std::make_shared<PseudoMinimizeHelper>(reinterpret_cast<HWND>(static_cast<uintptr_t>(target_.window_id)));
+        if (!window_lifetime_->validate_window()) { error_ = window_lifetime_->last_error(); error_.method = method_; invalidate_cache("identity"); return false; }
+    }
+#endif
+    return true;
+}
+bool TargetScreencapBase::validate_pending_frame(const CaptureFrame& frame) {
+    std::lock_guard lock(capture_mutex_);
+    if (!validate_window_lifetime()) return false;
+    if (frame.sample.session_id && frame.sample.session_id != capture_session_) {
+        error_ = capture_error(MAA_WS_TARGET_CHANGED, MAA_WS_STAGE_CAPTURE, "Capture session changed before delivery", method_); return false;
+    }
+#if defined(_WIN32)
+    auto old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    struct Restore { DPI_AWARENESS_CONTEXT old; ~Restore() { if (old) SetThreadDpiAwarenessContext(old); } } restore { old };
+    if (!old) { error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Cannot validate physical geometry", method_, GetLastError(), "Win32"); return false; }
+    if (target_.type == MAA_WS_TARGET_WINDOW && IsIconic(reinterpret_cast<HWND>(static_cast<uintptr_t>(target_.window_id)))) {
+        error_ = capture_error(MAA_WS_TARGET_CHANGED, MAA_WS_STAGE_CAPTURE, "Window minimized before first-frame delivery", method_); return false;
+    }
+#endif
+    MaaWSFrameInfo current {};
+    if (!detail::resolve_source(target_, current, process_identity_, error_)) { error_.method = method_; return false; }
+    // Provider session descriptors cannot independently resolve image geometry.
+    // Retain their explicitly limited provider identity instead of comparing
+    // unknown (zero) dimensions to the first sample and discarding it.
+    if (target_.type == MAA_WS_TARGET_PIPEWIRE || target_.type == MAA_WS_TARGET_WLR) {
+        if (current.target_type == frame.source.target_type && current.scope == frame.source.scope && !std::strcmp(current.source_key, frame.source.source_key)) return true;
+        error_ = capture_error(MAA_WS_SOURCE_MISMATCH, MAA_WS_STAGE_CAPTURE, "Provider session changed before first-frame delivery", method_); return false;
+    }
+    if (!detail::same_source(frame.source, current, error_)) {
+        error_.method = method_; return false;
+    }
+    return true;
+}
 bool TargetScreencapBase::validate_source() {
+    std::lock_guard lock(capture_mutex_);
+    if (!validate_window_lifetime()) return false;
 #if defined(_WIN32)
     auto old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     struct Restore { DPI_AWARENESS_CONTEXT old; ~Restore() { if (old) SetThreadDpiAwarenessContext(old); } } restore { old };
@@ -86,31 +135,63 @@ bool TargetScreencapBase::validate_source() {
     return valid;
 }
 std::optional<CaptureFrame> TargetScreencapBase::screencap() {
+    std::lock_guard lock(capture_mutex_);
 #if defined(_WIN32)
     auto old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     struct Restore { DPI_AWARENESS_CONTEXT old; ~Restore() { if (old) SetThreadDpiAwarenessContext(old); } } restore { old };
     if (!old) { error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Cannot enter physical pixel DPI context", method_, GetLastError(), "Win32"); return {}; }
 #endif
     error_ = capture_error(MAA_WS_OK, 0, "");
-    if (!detail::resolve_source(target_, source_, process_identity_, error_)) { error_.method = method_; return {}; }
+    if (operation_ && !operation_->check(error_,method_)) return {};
+    if (!validate_window_lifetime()) return {};
+#if defined(_WIN32)
+    if (method_ == MAA_WS_METHOD_GDI && PseudoMinimizeHelper::logically_minimized(reinterpret_cast<HWND>(static_cast<uintptr_t>(target_.window_id)))) {
+        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "GDI cannot capture a logically minimized window", method_); return {};
+    }
+#endif
+    if (!detail::resolve_source(target_, source_, process_identity_, error_)) { invalidate_cache("source"); error_.method = method_; return {}; }
     const auto before = source_;
+    if (cached_frame_) {
+        MaaWSError mismatch {};
+        if (!detail::same_source(cached_frame_->source, before, mismatch)) invalidate_cache("layout");
+    }
     if (method_ == MAA_WS_METHOD_SCREENDC || method_ == MAA_WS_METHOD_DXGI_DESKTOP_DUP_WINDOW) {
         const auto& w = source_.desktop_rect;
         const auto& r = source_.monitor.desktop_rect;
         if (!(source_.valid_fields & MAA_WS_VALID_MONITOR) || w.x < r.x || w.y < r.y || w.x+w.width > r.x+r.width || w.y+w.height > r.y+r.height) {
+            invalidate_cache("visible_geometry");
             error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Visible window capture requires one unambiguous containing output", method_); return {};
         }
         source_.limitations |= MAA_WS_LIMIT_VISIBLE_DESKTOP;
     }
     auto image = capture_image();
+    if (operation_ && !operation_->check(error_,method_)) { invalidate_cache("interrupted"); return {}; }
     if (!image || image->empty()) {
         if (!error_.code) error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "Native backend failed to capture", method_);
+        if (cache_timeout_ && error_.code == MAA_WS_TIMEOUT && cached_frame_ && cached_frame_->sample.session_id == capture_session_) {
+            const auto timeout = error_;
+            auto replay = *cached_frame_; replay.sample.flags = MAA_WS_SAMPLE_REUSED;
+            MaaWSFrameInfo after {};
+            if (validate_pending_frame(*cached_frame_) && detail::resolve_source(target_, after, process_identity_, error_)
+                && detail::same_source(before, after, error_) && detail::same_source(cached_frame_->source, after, error_)
+                && validate_pending_frame(*cached_frame_) && (!operation_ || operation_->accepts(replay,error_))) {
+                replay.image = replay.image.clone();
+                if (diagnostics_) {
+                    const auto count = ++replay_count_;
+                    if (count <= 4 || !(count & (count - 1))) LogDebug << "event=cache_replay method=" << method_ << " sample=" << replay.sample.sample_id
+                        << " session=" << replay.sample.session_id << " age_ns=" << capture_clock_ns()-replay.sample.sampled_at_ns << " count=" << count;
+                }
+                error_ = capture_error(MAA_WS_OK, 0, ""); return replay;
+            }
+            if (!error_.code) error_ = timeout;
+        }
+        if (error_.code != MAA_WS_TIMEOUT && error_.code != MAA_WS_STALE_FRAME) invalidate_cache("backend_error");
         return {};
     }
     MaaWSFrameInfo after {};
-    if (!detail::resolve_source(target_, after, process_identity_, error_) || !detail::same_source(before, after, error_)) { error_.method = method_; return {}; }
+    if (!detail::resolve_source(target_, after, process_identity_, error_) || !detail::same_source(before, after, error_)) { invalidate_cache("publication_source"); error_.method = method_; return {}; }
     if (source_.pixel_semantics == MAA_WS_PIXELS_NATIVE && (uint32_t(image->cols) != source_.pixel_width || uint32_t(image->rows) != source_.pixel_height)) {
-        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Buffer dimensions differ from native content geometry", method_); return {};
+        invalidate_cache("buffer_geometry"); error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Buffer dimensions differ from native content geometry", method_); return {};
     }
     source_.layout_after = after.layout_before; source_.method = method_;
     if (target_.type == MAA_WS_TARGET_WINDOW && method_ != MAA_WS_METHOD_SCREENDC && method_ != MAA_WS_METHOD_DXGI_DESKTOP_DUP_WINDOW) {
@@ -119,6 +200,10 @@ std::optional<CaptureFrame> TargetScreencapBase::screencap() {
     source_.pixel_width = image->cols; source_.pixel_height = image->rows;
     source_.content_rect = { 0, 0, double(image->cols), double(image->rows) };
     source_.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    return CaptureFrame { std::move(*image), source_ };
+    CaptureFrame frame { std::move(*image), source_ };
+    frame.sample = {sizeof(MaaWSFrameSampleInfo), MAA_WS_SAMPLE_NEW, ++next_sample_, source_.timestamp_ns, 0, capture_session_};
+    if (operation_ && !operation_->accepts(frame,error_)) return {};
+    if (cache_timeout_) { cached_frame_ = frame; cached_frame_->image = frame.image.clone(); }
+    return frame;
 }
 }

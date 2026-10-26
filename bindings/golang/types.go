@@ -39,6 +39,34 @@ Reserved uint32
 Target MaaWSCaptureTarget
 Methods uint64
 }
+type MaaWSCapturePolicy struct {
+Struct_size uint32
+Reserved uint32
+Flags uint64
+}
+type MaaWSAdvancedCapturePolicy struct {
+Struct_size uint32
+Reserved uint32
+Flags uint64
+Max_sample_age_ns uint64
+Connect_timeout_ns uint64
+Capture_timeout_ns uint64
+First_frame_timeout_ns uint64
+}
+type MaaWSMethodBehavior struct {
+Struct_size uint32
+Reserved uint32
+Method uint64
+Flags uint64
+}
+type MaaWSFrameSampleInfo struct {
+Struct_size uint32
+Flags uint32
+Sample_id uint64
+Sampled_at_ns uint64
+Delivered_at_ns uint64
+Session_id uint64
+}
 type MaaWSMonitorInfo struct {
 Struct_size uint32
 Index uint32

@@ -13,8 +13,8 @@ MWS_NS_BEGIN
 class DesktopDupWindowScreencap : public DesktopDupScreencap
 {
 public:
-    explicit DesktopDupWindowScreencap(CaptureTarget target)
-        : DesktopDupScreencap(target, MAA_WS_METHOD_DXGI_DESKTOP_DUP_WINDOW)
+    explicit DesktopDupWindowScreencap(CaptureTarget target, bool cache_timeout = false)
+        : DesktopDupScreencap(target, MAA_WS_METHOD_DXGI_DESKTOP_DUP_WINDOW, cache_timeout)
     {
     }
 
