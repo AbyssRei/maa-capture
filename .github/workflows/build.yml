@@ -104,13 +104,13 @@ jobs:
           if ($LASTEXITCODE) { throw 'Java compile failed' }
           dotnet build bindings/csharp/test/test.csproj
           if ($LASTEXITCODE) { throw 'C# build failed' }
-          $savedGoOS=$env:GOOS; $savedCgo=$env:CGO_ENABLED
+          $savedGoOS=$env:GOOS; $savedGoArch=$env:GOARCH; $savedCgo=$env:CGO_ENABLED
           Push-Location bindings/golang
           try {
-            $env:GOOS='windows'; $env:CGO_ENABLED='0'
+            $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'
             go build ./...
             if ($LASTEXITCODE) { throw 'Go pure build failed' }
-          } finally { $env:GOOS=$savedGoOS; $env:CGO_ENABLED=$savedCgo; Pop-Location }
+          } finally { $env:GOOS=$savedGoOS; $env:GOARCH=$savedGoArch; $env:CGO_ENABLED=$savedCgo; Pop-Location }
       - name: Windows binding callback and frame runtime tests
         if: runner.os == 'Windows'
         run: |
@@ -128,7 +128,7 @@ jobs:
             if ($LASTEXITCODE) { throw 'Rust runtime failed' }
             $env:LIB=$savedLib
             $env:CGO_ENABLED='1'
-            $env:PATH="C:/Program Files/LLVM/bin;$env:PATH"; $env:CC='clang'
+            $env:PATH="C:/Program Files/LLVM/bin;$env:PATH"; $env:CC='clang -fuse-ld=lld'
             Push-Location bindings/golang
             try {
               go run ./test
