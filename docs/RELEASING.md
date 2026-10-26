@@ -1,6 +1,6 @@
 # ABI 2 发布
 
-2.0.0 是破坏性 MAJOR 版本，ABI 代际 2。正式发布前确认版本未占用，
+3.0.0 是 SDK/绑定的破坏性 MAJOR 版本，C ABI 代际保持 2。正式发布前确认版本未占用，
 同步 CMake、Python 元数据/__version__、Node、Rust/Cargo.lock、C# 工程和 CHANGELOG。
 本仓库只接受三段稳定版本；不覆盖已发布资产。
 
@@ -38,5 +38,5 @@ verify-sdk.py 仅使用解压后的 SDK 头文件、库和示例。
 scripts/check-release-assets.py 是分支和 Release 共用的完整性入口。
 
 SONAME/install-name 代际为 2，SDK 打包保留版本文件和符号链接。
-Windows 不具备同名 DLL 的历史二进制兼容承诺，必须成套替换并重编译。
+原 ABI 2 C 入口/结构的兼容性由原始 C 调用方验证；C++ SDK 消费者必须成套替换并重编译。
 迁移详情见 [API_MIGRATION.md](API_MIGRATION.md)。

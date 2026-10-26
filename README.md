@@ -1,7 +1,8 @@
 # maa-capture
 
-跨平台原生截图 SDK，提供 C/C++ 和六语言绑定。当前源码版本为 **2.0.0，ABI 2**；
-所有使用 ABI 1 的消费者必须升级绑定并重新编译，不能直接替换历史 DLL。
+跨平台原生截图 SDK，提供 C/C++ 和六语言绑定。当前源码版本为 **3.0.0，ABI 2**；
+2.x 的 C++ SDK 消费者和使用旧 C# 构造器的预编译消费者须重编译；Rust/Go 完整帧结构字面量需迁移。
+原 C ABI 2 结构与入口保持兼容；ABI 1 消费者仍须升级绑定。
 
 - Windows：严格按显示器设备 key 捕获；支持窗口 GDI、FramePool、DXGI 裁剪、PrintWindow、ScreenDC。
 - macOS 14+：ScreenCaptureKit 显示器/窗口捕获，按过滤器的 point/pixel 比例请求原生网格。
@@ -30,8 +31,8 @@ with Manager(target=MonitorTarget(primary.monitor_key)) as capture:
 布局或来源改变时丢弃帧并返回结构化错误。
 
 [构建](docs/BUILDING.md) · [集成契约](docs/INTEGRATION.md) ·
-[ABI 2 迁移](docs/API_MIGRATION.md) · [平台几何](docs/SCREEN_CAPTURE.md) ·
-[验证状态](docs/CAPTURE_SOURCE_VALIDATION.md) · [发布](docs/RELEASING.md)
+[API 迁移](docs/API_MIGRATION.md) · [平台几何](docs/SCREEN_CAPTURE.md) ·
+[本轮验证](docs/REPAIR_VALIDATION.md) · [原 ABI 2 验证](docs/CAPTURE_SOURCE_VALIDATION.md) · [发布](docs/RELEASING.md)
 
 完整源码分发物为 `maa-capture-v<version>-source.tar.gz`；
 Python sdist 只代表 Python 分发范围。构建清单记录提交、工具链、选项和原生哈希；

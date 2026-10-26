@@ -4,7 +4,7 @@
 提交遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。
 以下版本属于 maa-capture 的重新编号，旧项目已发布的发行版不覆盖、不重新发布。
 
-## 未发布
+## 3.0.0（2026-10-26）
 
 - BREAKING CHANGE：Rust/Go 公开 CaptureFrame 新增 sample 字段，需更新完整结构字面量；C++ 基类与管理器布局、可复制性改变，所有 SDK 消费方须成套重编译。软件按 MAJOR 发布，原 C ABI 2 的结构及入口仍兼容。
 

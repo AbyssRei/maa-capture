@@ -93,6 +93,9 @@ E1–E5 已加入独立高级策略，原 ABI 2 结构及旧入口保持不变�
 
 补测没有复现“库自身恢复造成前台变化而误取消意图”。仅凭旧失败不足以收紧判据；
 要求新键鼠输入还会排除外部程序主动恢复并激活目标的既有行为，因此已撤回临时收紧。
+此处“原判据”指本轮修复在临时收紧前的实现，不是未经改动的上游实现。
+上游 `0fc6025c2fc224a171b57d89505e8d47acd2a8b1` 仅判断目标前台，另有约 100ms 独立轮询；
+本库从 `9cdbe50` 起采用按需观察，暂停库操作时恢复可能延后。
 最终保留恢复后前台快照与输入观察：目标后来变为前台，或目标仍在前台且出现新输入时协调恢复。
 真实用户切回目标可能使测试的最终最小化断言失效；切到其他窗口的对照没有复现。
 这说明历史失败存在外部焦点干扰的可能，不能断言就是用户切窗，也不能据此认定库有时序缺陷。
@@ -104,14 +107,18 @@ Python 3.12/3.13 各 13 项通过；关闭 FramePool 的完整 CTest 3/3 通过�
 日志：`build-enhancements/focus-tightened.log`、`build-focus-old/focus.log`、
 `build-focus-old/exact-minimize.log` 及各自 CSV。隔离旧判据构建不覆盖主构建产物。
 
-## 尚未放行
+## 跨平台构建与发布验证
 
-Linux/macOS 本轮编译与桌面结果仍待三平台 CI/实机；本轮不使用 WSL 验证 Linux 构建。
+实现提交 `d20d18966c25e33dd40055cd698800b92a83bc98` 的[完整 GitHub Actions](https://github.com/AbyssRei/maa-capture/actions/runs/40322370989)已成功：
+Windows/Linux/macOS 原生构建、绑定检查、SDK 消费、源码包重建和三平台 Python 3.12/当前版最终 wheel 均通过。
+Linux/macOS 桌面实机结果仍未验证；本轮未使用 WSL 验证 Linux 构建。
 原应用 46 组三轮矩阵、17 个因果对照的原入口、连续矩阵、生产插件 QThread/120 秒流、运行时与冻结包审计尚未重跑。
 本次原生回归覆盖相应故障路径，不替代这些应用门禁。
 
-没有提升版本、提交/推送发布版本、打标签或生成三平台正式资产。须在实现分支 CI 与对应验收通过后，
-从干净固定提交分别完成版本与标签发布、SDK/wheel/sdist/源码/provenance/SHA256SUMS 放行，随后执行 R5 应用依赖、审计身份和新元数据接入。
+实现 CI 成功后单独提升软件版本至 3.0.0，C ABI 保持 2；版本提交与附注标签 `v3.0.0` 分别推送，
+版本提交 CI 成功后才推送标签。标签工作流须再次验证 SDK/wheel/sdist/源码/provenance/SHA256SUMS。
+最终发布状态以[标签工作流](https://github.com/AbyssRei/maa-capture/actions?query=branch%3Av3.0.0)与[Release](https://github.com/AbyssRei/maa-capture/releases/tag/v3.0.0)为准。
+R5 应用依赖、审计身份和新元数据接入仍待后续执行。
 应用当前正式依赖与哈希未替换。
 
 真实游戏、串流、独占全屏、物理插拔/重排、125%/200%、明确跨 GPU、实际权限边界及真实 HWND 复用环境仍未验证。
