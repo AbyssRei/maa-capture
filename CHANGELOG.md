@@ -4,6 +4,16 @@
 提交遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。
 以下版本属于 maa-capture 的重新编号，旧项目已发布的发行版不覆盖、不重新发布。
 
+## 2.0.0（开发中，尚未发布）
+
+- BREAKING CHANGE：统一 ABI 2 显式目标、独立帧、来源元数据和带长度的回调协议；删除旧 setter、索引选屏及仅返回图像的接口。
+- Windows 增加不可变显示器快照、设备路径身份、严格 DXGI 输出/适配器匹配和前后布局校验；删除主屏回退。
+- 修复 DXGI 纹理解除映射后引用、DDB 图像方向和 FramePool 旧帧/边界钳制问题。
+- macOS 采用 display UUID、过滤器像素比例和独立异步共享状态；实机验收仍待完成。
+- 六语言绑定迁移至 ABI 2；Python 提供冻结值对象、完整查询与子进程诊断。
+- 新增完整源码包、SDK/wheel 构建清单、来源哈希及三平台最终资产验证流程。
+- 本次 Windows 验证及未完成项目见 docs/CAPTURE_SOURCE_VALIDATION.md；无桌面 CI 不替代实机验收。
+
 ## 1.0.0
 
 - 项目与仓库统一命名为 `maa-capture`；Python / Rust / Go 模块名为 `maa_capture`，Java 包为 `maa.capture`。

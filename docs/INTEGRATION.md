@@ -1,69 +1,36 @@
-# 接口、图像与生命周期
+# ABI 2 集成契约
 
-主仓库：[AbyssRei/maa-capture](https://github.com/AbyssRei/maa-capture)。外部接口示例在 [sample](../sample/)，语言绑定入口在 [bindings](../bindings/README.md)。
+管理器创建时必须提交一个带标签的 CaptureTarget。monitor 使用设备 key，window 使用
+平台和 HWND/CGWindowID，可附进程 ID；PipeWire 和 Wlr 使用外部授权/会话配置，
+custom 使用 provider key 和范围声明。创建后目标与方法配置不可变，更换来源须重建。
 
-## 两种扩展入口
+methods=0 由目标范围和编译能力派生候选。显式选择先逐位验证；
+未知、未编入或跨范围方法直接失败，不静默丢弃。
+能力查询仅描述编译情况及范围，connect 和实际取帧决定运行时可用性。
 
-- C++：继承 `mws::ScreencapBase` 并实现 `screencap()`，通过 `ScreencapMgr::register_unit()` 注册。
-- C ABI：填充 `MaaWSCustomScreencapCallbacks`，通过 `MaaWSManagerRegisterCustomUnit()` 注册，或使用单独的 `MaaWSCustomScreencapCreate()` 句柄。
+C API 的结构均使用固定宽度字段，struct_size 必须等于本代 sizeof；
+reserved 必须为零。固定容量字符串为 UTF-8，容量含结尾 NUL；
+返回结构按值复制，管理器选中名称的 const char* 仅到 inactive/destroy 前有效。
+任意外部地址的可读性由调用方保证；库验证 NULL、尺寸、声明长度、步长和溢出，
+不声称能证明指针后真实分配的内存长度。
 
-自定义单元与启用的内置方式一起参与测速。仅用自定义来源时传 `Method_None` / `MAA_WS_METHOD_NONE` / `Manager.METHOD_NONE`。
+Snapshot 独立于管理器且不可变，读取条目不会再次查询操作系统。
+其顺序为主屏优先，其余按设备 key 排序；index 只用于当前快照展示。
+layout_token 覆盖身份、主屏、几何、缩放和旋转，不可作为持久硬件身份。
 
-## 推荐调用顺序
+每次取帧核验当前目标、复制原生缓冲并再次核验相关身份与布局。
+发现变化则丢弃像素。Windows 窗口核对 HWND、进程 ID/创建时间及客户区；
+macOS 窗口核对 CGWindowID、拥有进程和过滤器几何。采样不能排除采样间的所有瞬态变化。
 
-1. 创建管理器并选择内置方式。
-2. 在首次 `connect()` 前配置窗口、显示器、PipeWire 目标或 Wayland socket，注册自定义单元。
-3. 检查 `connect()` 是否成功，再循环调用 `screencap()`。
-4. 不再需要画面时调用 `inactive()`；程序结束或异常退出时销毁管理器。
+成功帧包含 BGR 像素、实际方法、来源 key、坐标约定、内容矩形、布局 token 和限制。
+C FrameHandle 独立于管理器；必须单独 FrameDestroy。
+Python 返回冻结值对象和 bytes，finally 释放原生帧。
+C++ ScreencapBase::screencap 返回 optional<CaptureFrame>，last_error 提供失败详情。
+自定义 C++ 单元只可注册到对应 custom 目标，并须返回同一来源声明。
 
-`inactive()` 用于停用生产者或恢复临时窗口状态，不等于销毁句柄。再次截图时后端会按需恢复。更换来源或重新建立 Portal 授权时，建议创建新管理器并使用新的连接资源。
+同一管理器须由宿主串行使用，不提供全局锁。inactive 释放资源/恢复临时窗口状态，
+重新使用须 connect；Destroy/RAII/close 负责最终释放。
+最后一次失败保留到下一次失败；读取 last_error 不清除它。
 
-Python 可使用 `with Manager(...) as capture:`，也可显式 `close()`。`close()` 可重复调用，关闭后继续操作会抛出 RuntimeError；异常退出 `with` 也会执行清理，原异常继续传播。
-
-## 图像格式与所有权
-
-输出为 BGR 三通道，字段包括宽、高、通道数及每行字节数 `step`。不要默认把任意原始缓冲按 `width * height * channels` 连续解释；原始回调可以带行填充。
-
-C ABI 返回的图像指针由句柄持有，有效期到下一次截图或句柄销毁前。不要自行释放这个指针，需长期保留时立即复制。Python 的 `Manager.screencap()` 返回 `ImageBuffer.Info`，其中 `data` 是已复制的 bytes，可独立保留。
-
-C++ `Image` 的拷贝共享底层所有权，`clone()` 深拷贝；包装外部缓冲的 `Image::wrap()` 不负责延长外部缓冲的生命周期。
-
-## 回调内存必须保持有效
-
-C 侧保存回调结构体及函数指针。调用方必须确保结构体、函数对象、上下文及像素缓冲在使用期间存活，不能把返回后即失效的栈上像素缓冲交给原生层。
-
-Python 示例使用持久 ctypes 缓冲：
-
-```python
-import ctypes
-from maa_capture import ImageBuffer, Manager, ScreencapCallbacks
-
-pixels = (ctypes.c_ubyte * 8)(10, 20, 30, 255, 40, 50, 60, 255)
-def capture_frame(_arg, out: ImageBuffer):
-    out.data = ctypes.cast(pixels, ctypes.POINTER(ctypes.c_ubyte))
-    out.width, out.height, out.channels, out.step = 2, 1, 4, 8
-    return 1
-
-callbacks = ScreencapCallbacks(screencap=capture_frame)
-with Manager(methods=Manager.METHOD_NONE) as capture:
-    assert capture.register_custom_unit("example", callbacks)
-    assert capture.connect()
-    image = capture.screencap()
-    assert image.data == bytes([10, 20, 30, 40, 50, 60])
-```
-
-回调应返回 1 表示成功、0 表示失败，内部异常应转成失败结果。测速会调用截图回调多次，也会停用未选中的候选；`inactive` 回调应可重复调用，并允许未来截图时恢复来源。
-
-## 线程与 API 边界
-
-同一管理器的配置、连接、截图、停用和关闭操作需要调用方串行化。Python 的 GIL 不能作为原生对象线程安全保证。多线程场景可使用独立管理器或调用方锁。
-
-PipeWire 内部的流线程不改变上述约束。回调里不要并发关闭正在使用的管理器，也不要假设截图回调只执行一次。
-
-`hwnd` 在 Windows 是 HWND，在 macOS 是 CGWindowID 的整数值，在 Linux 被忽略。窗口枚举、Portal 授权、键鼠输入和 OCR 不由这些截图接口提供。
-
-## C ABI 兼容
-
-C ABI 保留 `MaaWS` 命名，结构字段使用固定宽度整数和指针。C++ 需要使用匹配的编译器 ABI；跨语言或跨编译器集成优先使用 C ABI。
-
-Windows 的专用 C++ 头文件位于 `maa-capture/Windows/`；跨平台入口位于 `maa-capture/`，见[构建接入](BUILDING.md)。
+参考 [迁移表](API_MIGRATION.md)、[平台几何](SCREEN_CAPTURE.md) 和
+[公开 C 头](../include/maa-capture/MaaWSCustomScreencap.h)。
