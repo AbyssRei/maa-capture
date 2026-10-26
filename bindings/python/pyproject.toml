@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "maa-capture"
-version = "1.0.0"
+version = "2.0.0"
 description = "Cross-platform screen/window capture binding: Win32 (GDI/DXGI/FramePool/PrintWindow), Linux (PipeWire/Wlr), macOS (ScreenCaptureKit)"
 readme = "README.md"
 license = "LGPL-3.0-or-later"

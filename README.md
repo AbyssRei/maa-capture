@@ -1,6 +1,6 @@
 # maa-capture
 
-跨平台原生截图 SDK，提供 C/C++ 和六语言绑定。当前为 **ABI 2 开发版本**，正式发布目标为 **2.0.0**；
+跨平台原生截图 SDK，提供 C/C++ 和六语言绑定。当前源码版本为 **2.0.0，ABI 2**；
 所有使用 ABI 1 的消费者必须升级绑定并重新编译，不能直接替换历史 DLL。
 
 - Windows：严格按显示器设备 key 捕获；支持窗口 GDI、FramePool、DXGI 裁剪、PrintWindow、ScreenDC。

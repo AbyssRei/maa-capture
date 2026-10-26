@@ -4,7 +4,7 @@
 提交遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。
 以下版本属于 maa-capture 的重新编号，旧项目已发布的发行版不覆盖、不重新发布。
 
-## 2.0.0（开发中，尚未发布）
+## 2.0.0（2026-10-26）
 
 - BREAKING CHANGE：统一 ABI 2 显式目标、独立帧、来源元数据和带长度的回调协议；删除旧 setter、索引选屏及仅返回图像的接口。
 - Windows 增加不可变显示器快照、设备路径身份、严格 DXGI 输出/适配器匹配和前后布局校验；删除主屏回退。

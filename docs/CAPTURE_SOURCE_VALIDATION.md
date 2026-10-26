@@ -1,6 +1,6 @@
 # 截图来源实施验证记录
 
-日期：2026-10-26（Asia/Shanghai）。状态：Windows 本机部分验收；未发布。
+日期：2026-10-26（Asia/Shanghai）。状态：Windows 本机与三平台 CI 已通过；实机验收范围见下文。
 
 本轮已实现 ABI 2 统一目标/帧/回调、显示器快照、Windows 严格来源、macOS 原生像素路径、
 六语言迁移、子进程诊断和发布资产流程。原计划保留为设计基线，不能将本记录视为
@@ -62,12 +62,12 @@ cmake --build build --config Release --parallel
 
 ## 后续实机验收与调用方交接项目
 
-- macOS 原生编译与 Retina/普通屏像素、边框/阴影、TCC 拒绝/撤销/恢复、迟到回调实机检查。
-- Linux 带依赖的 PipeWire/Wlr 原生构建与授权来源截图运行；Wlr 方向标志及
+- macOS Retina/普通屏像素、边框/阴影、TCC 拒绝/撤销/恢复、迟到回调实机检查。
+- Linux 授权来源截图运行；Wlr 方向标志及
   Portal FD 消费后禁止切换到 daemon 的修复尚无实机结果。
 - 插拔、主屏切换、镜像、旋转屏、明确跨 GPU 输出及 Windows 125%+200% 组合。
 - 全平台连续资源/CPU/内存对比；当前色块和恢复循环不替代资源泄漏长期测量。
-- 三平台远端 CI、最终聚合 wheel、完整 Release 资产及真实提交的来源哈希交叉核验。
+- 版本标签产生的正式 Release 资产，仍须通过同一套构建、最终 wheel 与来源哈希校验。
 
 本机无法替代以上验收。来源/布局核验是前后采样，不声称原子桌面事务；
 暂未实现的旋转或不可表达的跨屏几何明确返回不支持。
@@ -77,3 +77,17 @@ cmake --build build --config Release --parallel
 按用户授权，本次以 Windows 本机回归和 GitHub Actions 全平台构建/资产验证作为发版门槛；
 不使用 WSL 验证 Linux 构建。先分组提交实现并推送 main，全部 CI 通过后再独立提交版本提升，
 推送并验证版本提交，最后单独推送 v2.0.0 标签。实机未验证的项目继续保留，不视为已通过。
+
+## 三平台 CI（2026-10-26）
+
+实现提交 `1ec78be91466c9048615383cedfa3e68c01e14e9` 的
+[完整 GitHub Actions 验证](https://github.com/AbyssRei/maa-capture/actions/runs/40268918946) 已通过：
+
+- Windows x64、Linux x64、macOS ARM64 原生构建、回归与解压 SDK 的 C/C++ 消费。
+- Windows 关闭 FramePool 构建，以及六语言回调/取帧/关闭的运行验证。
+- Linux 的 PipeWire/Wlr 和 macOS 的 ScreenCaptureKit 已在构建清单中确认为启用。
+- 三平台独立源码包重建，以及 Python 3.12/当前版的最终聚合 wheel 安装回归。
+- 八项分发资产的哈希与原生/源码提交来源关联校验。
+
+该轮验证沿用版本提升前的开发元数据，ABI 代际为 2；正式版本在其通过后独立提升至 2.0.0。
+本次没有使用 WSL 验证 Linux，Linux 结果来自 GitHub 托管 runner。

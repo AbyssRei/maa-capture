@@ -1,6 +1,6 @@
 [package]
 name = "maa-capture"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 description = "Rust binding for the standalone maa-capture library (extracted from MaaFramework)"
 

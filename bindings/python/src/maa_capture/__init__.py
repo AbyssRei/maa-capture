@@ -4,6 +4,6 @@ from ._types import (CaptureTarget,MonitorTarget,WindowTarget,PipeWireTarget,Wlr
     CaptureError,CaptureException,provider_frame)
 from ._core import Manager,ScreencapCallbacks,available_methods,monitors,method_capabilities,runtime_info
 from ._loader import set_lib_path,lib_path
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__ = [name for name in globals() if not name.startswith("_")]
 __all__.append("__version__")

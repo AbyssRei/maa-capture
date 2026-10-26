@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
 project(maa_capture_consumer LANGUAGES C CXX)
-find_package(maa-capture 1 CONFIG REQUIRED)
+find_package(maa-capture 2 CONFIG REQUIRED)
 add_executable(maa_capture_consumer ../native_smoke.cpp)
 target_link_libraries(maa_capture_consumer PRIVATE maa-capture::maa-capture)
