@@ -1,0 +1,17 @@
+{
+  "version": "@PROJECT_VERSION@",
+  "commit": "@MWS_COMMIT@",
+  "abi": 2,
+  "compiler": "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@",
+  "sdk": "@MWS_SDK@",
+  "system": "@CMAKE_SYSTEM_NAME@",
+  "architecture": "@CMAKE_SYSTEM_PROCESSOR@",
+  "options": {
+    "framepool": @MWS_FRAMEPOOL_ENABLED@,
+    "pipewire": @MWS_PIPEWIRE_DETECTED@,
+    "wlr": @MWS_WLR_DETECTED@,
+    "screencapturekit": @MWS_SCK_DETECTED@
+  },
+  "native_file": "NATIVE_NAME_PLACEHOLDER",
+  "native_sha256": "NATIVE_SHA256_PLACEHOLDER"
+}

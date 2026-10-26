@@ -10,18 +10,19 @@
 
 MWS_NS_BEGIN
 
-class GdiScreencap : public ScreencapBase
+class GdiScreencap : public TargetScreencapBase
 {
 public:
-    explicit GdiScreencap(HWND hwnd)
-        : hwnd_(hwnd)
+    explicit GdiScreencap(CaptureTarget target)
+        : TargetScreencapBase(target, MAA_WS_METHOD_GDI)
+        , hwnd_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id)))
     {
     }
 
     virtual ~GdiScreencap() override = default;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override;
+    virtual std::optional<Image> capture_image() override;
 
 private:
     HWND hwnd_ = nullptr;

@@ -5,56 +5,14 @@
 
 MWS_NS_BEGIN
 
-std::optional<Image> PrintWindowScreencap::screencap()
+std::optional<Image> PrintWindowScreencap::capture_image()
 {
     if (!hwnd_) {
         LogError << "hwnd_ is nullptr";
         return std::nullopt;
     }
 
-    auto image = capture_window(hwnd_);
-    if (!image) {
-        return std::nullopt;
-    }
-
-    HWND root = GetAncestor(hwnd_, GA_ROOTOWNER);
-    if (!root) {
-        root = hwnd_;
-    }
-
-    HWND popup = GetLastActivePopup(root);
-    if (!popup || popup == hwnd_ || popup == root || !IsWindow(popup) || !IsWindowVisible(popup)) {
-        return image;
-    }
-
-    auto popup_image = capture_window(popup);
-    if (!popup_image) {
-        LogWarn << "Failed to capture active popup, returning main window image" << VAR(popup);
-        return image;
-    }
-
-    POINT main_origin = { 0, 0 };
-    POINT popup_origin = { 0, 0 };
-    if (!ClientToScreen(hwnd_, &main_origin) || !ClientToScreen(popup, &popup_origin)) {
-        LogWarn << "Failed to locate active popup, returning main window image" << VAR(popup) << VAR(GetLastError());
-        return image;
-    }
-
-    const int offset_x = popup_origin.x - main_origin.x;
-    const int offset_y = popup_origin.y - main_origin.y;
-    const Rect canvas_rect(0, 0, image->cols, image->rows);
-    const Rect popup_rect(offset_x, offset_y, popup_image->cols, popup_image->rows);
-    const Rect dst_rect = canvas_rect & popup_rect;
-    if (dst_rect.empty()) {
-        LogWarn << "Active popup is outside the main client area" << VAR(popup) << VAR(offset_x) << VAR(offset_y);
-        return image;
-    }
-
-    const Rect src_rect(dst_rect.x - offset_x, dst_rect.y - offset_y, dst_rect.width, dst_rect.height);
-    // 目标 ROI 是 image 的视图（左值），把弹窗的 src 区域原位拷贝进去
-    Image dst_view = image->roi(dst_rect);
-    popup_image->roi(src_rect).copy_to(dst_view);
-    return image;
+    return capture_window(hwnd_);
 }
 
 std::optional<Image> PrintWindowScreencap::capture_window(HWND capture_hwnd)
@@ -144,8 +102,10 @@ std::optional<Image> PrintWindowScreencap::capture_window(HWND capture_hwnd)
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
+    SelectObject(mem_dc, old_obj);
+    old_obj = nullptr;
     Image mat(height, width, 4);
-    if (!GetDIBits(mem_dc, bitmap, 0, height, mat.data, &bmi, DIB_RGB_COLORS)) {
+    if (GetDIBits(mem_dc, bitmap, 0, height, mat.data, &bmi, DIB_RGB_COLORS) != height) {
         LogError << "GetDIBits failed, error code: " << GetLastError();
         return std::nullopt;
     }

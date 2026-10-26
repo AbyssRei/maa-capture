@@ -5,7 +5,7 @@
 
 MWS_NS_BEGIN
 
-std::optional<Image> GdiScreencap::screencap()
+std::optional<Image> GdiScreencap::capture_image()
 {
     if (!hwnd_) {
         LogError << "hwnd_ is nullptr";
@@ -67,9 +67,19 @@ std::optional<Image> GdiScreencap::screencap()
         return std::nullopt;
     }
 
+    // Read a top-down 32-bit DIB. DDB storage order/format is not an image contract.
+    SelectObject(mem_dc, old_obj);
+    old_obj = nullptr;
+    BITMAPINFO bmi {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
     Image mat(height, width, 4);
-    if (!GetBitmapBits(bitmap, width * height * 4, mat.data)) {
-        LogError << "GetBitmapBits failed, error code: " << GetLastError();
+    if (GetDIBits(mem_dc, bitmap, 0, height, mat.data, &bmi, DIB_RGB_COLORS) != height) {
+        error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "GetDIBits failed", method_, GetLastError(), "Win32");
         return std::nullopt;
     }
 

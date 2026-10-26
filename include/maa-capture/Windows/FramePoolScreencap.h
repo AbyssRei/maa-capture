@@ -32,21 +32,21 @@
 
 MWS_NS_BEGIN
 
-class FramePoolScreencap : public ScreencapBase
+class FramePoolScreencap : public TargetScreencapBase
 {
 public:
-    explicit FramePoolScreencap(HWND hwnd)
-        : hwnd_(hwnd)
-    {
-    }
+    explicit FramePoolScreencap(CaptureTarget target);
 
     virtual ~FramePoolScreencap() override;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override;
+    virtual std::optional<Image> capture_image() override;
     void inactive() override;
 
 private:
+    struct Worker;
+    std::unique_ptr<Worker> worker_;
+    std::optional<Image> capture_on_worker();
     bool init();
     bool init_texture(winrt::com_ptr<ID3D11Texture2D> raw_texture);
     void uninit();
@@ -60,7 +60,6 @@ private:
 
     winrt::com_ptr<ID3D11Device> d3d_device_ = nullptr;
     winrt::com_ptr<ID3D11DeviceContext> d3d_context_ = nullptr;
-    winrt::com_ptr<IDXGISwapChain> dxgi_swap_chain_ = nullptr;
     winrt::com_ptr<ID3D11Texture2D> readable_texture_ = nullptr;
     D3D11_TEXTURE2D_DESC texture_desc_ = { };
 
@@ -70,7 +69,6 @@ private:
 
     // 存储上次的窗口大小，用于检测窗口大小变化
     std::pair<int, int> last_capture_size_ = { 0, 0 };
-    Image cached_image_;
 };
 
 MWS_NS_END
@@ -79,17 +77,18 @@ MWS_NS_END
 
 MWS_NS_BEGIN
 
-class FramePoolScreencap : public ScreencapBase
+class FramePoolScreencap : public TargetScreencapBase
 {
 public:
-    explicit FramePoolScreencap(HWND)
+    explicit FramePoolScreencap(CaptureTarget target)
+        : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL)
     {
     }
 
     virtual ~FramePoolScreencap() override = default;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override
+    virtual std::optional<Image> capture_image() override
     {
         return std::nullopt;
     }

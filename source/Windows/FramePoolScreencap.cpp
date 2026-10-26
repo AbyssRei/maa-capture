@@ -10,6 +10,10 @@
 #include <winrt/Windows.Security.Authorization.AppCapabilityAccess.h>
 
 #include <thread>
+#include <condition_variable>
+#include <future>
+#include <mutex>
+#include <roapi.h>
 
 #include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
@@ -17,17 +21,60 @@
 
 MWS_NS_BEGIN
 
-FramePoolScreencap::~FramePoolScreencap()
-{
-    uninit();
+struct FramePoolScreencap::Worker {
+    using Task = std::packaged_task<std::optional<Image>()>;
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::optional<Task> pending;
+    std::jthread thread;
+    explicit Worker(FramePoolScreencap* owner) {
+        std::promise<void> initialized;
+        auto started = initialized.get_future();
+        thread = std::jthread([this, owner, init = std::move(initialized)](std::stop_token stop) mutable {
+            const auto hr = RoInitialize(RO_INIT_MULTITHREADED);
+            if (FAILED(hr)) { init.set_exception(std::make_exception_ptr(winrt::hresult_error(hr))); return; }
+            auto old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            init.set_value();
+            for (;;) {
+                std::unique_lock lock(mutex);
+                ready.wait(lock, [&] { return stop.stop_requested() || pending.has_value(); });
+                if (stop.stop_requested() && !pending) break;
+                Task task = std::move(*pending); pending.reset(); lock.unlock();
+                task(); // packaged_task transfers exceptions to the caller
+            }
+            owner->uninit();
+            winrt::clear_factory_cache();
+            if (old) SetThreadDpiAwarenessContext(old);
+            RoUninitialize();
+        });
+        started.get();
+    }
+    ~Worker() { thread.request_stop(); ready.notify_one(); }
+    std::optional<Image> invoke(std::function<std::optional<Image>()> operation) {
+        Task task(std::move(operation)); auto result = task.get_future();
+        { std::lock_guard lock(mutex); pending.emplace(std::move(task)); }
+        ready.notify_one(); return result.get();
+    }
+};
+FramePoolScreencap::FramePoolScreencap(CaptureTarget target)
+    : TargetScreencapBase(target, MAA_WS_METHOD_FRAMEPOOL)
+    , hwnd_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id))) {}
+FramePoolScreencap::~FramePoolScreencap() { worker_.reset(); }
+void FramePoolScreencap::inactive() {
+    if (worker_) worker_->invoke([this]() -> std::optional<Image> { uninit(); return {}; });
+    worker_.reset();
+}
+std::optional<Image> FramePoolScreencap::capture_image() {
+    try {
+        if (!worker_) worker_ = std::make_unique<Worker>(this);
+        return worker_->invoke([this] { return capture_on_worker(); });
+    } catch (const winrt::hresult_error& e) {
+        error_ = capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "FramePool worker failed", method_, e.code(), "HRESULT");
+        return {};
+    }
 }
 
-void FramePoolScreencap::inactive()
-{
-    uninit();
-}
-
-std::optional<Image> FramePoolScreencap::screencap()
+std::optional<Image> FramePoolScreencap::capture_on_worker()
 {
     if (!hwnd_) {
         LogError << "hwnd_ is nullptr";
@@ -73,11 +120,8 @@ std::optional<Image> FramePoolScreencap::screencap()
     }
 
     if (!frame) {
-        if (cached_image_.empty()) {
-            LogError << "Failed to get frame and no cached image available";
-            return std::nullopt;
-        }
-        return cached_image_.clone();
+        error_ = capture_error(MAA_WS_TIMEOUT, MAA_WS_STAGE_CAPTURE, "FramePool timed out", method_);
+        return std::nullopt;
     }
 
     auto surface = frame.Surface();
@@ -145,30 +189,15 @@ std::optional<Image> FramePoolScreencap::screencap()
     int client_width = client_rect.right - client_rect.left;
     int client_height = client_rect.bottom - client_rect.top;
 
-    if (border_left < 0) {
-        border_left = 0;
-    }
-    if (border_top < 0) {
-        border_top = 0;
-    }
-    if (client_width > raw.cols) {
-        client_width = raw.cols;
-    }
-    if (border_left + client_width > raw.cols) {
-        border_left = raw.cols - client_width;
-    }
-    if (client_height > raw.rows) {
-        client_height = raw.rows;
-    }
-    if (border_top + client_height > raw.rows) {
-        border_top = raw.rows - client_height;
+    if (border_left < 0 || border_top < 0 || border_left + client_width > raw.cols || border_top + client_height > raw.rows) {
+        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "FramePool content bounds do not fit buffer", method_);
+        return std::nullopt;
     }
 
     Rect client_roi(border_left, border_top, client_width, client_height);
     Image image = raw.roi(client_roi);
 
     Image result = bgra_to_bgr(image);
-    cached_image_ = result.clone();
     return result;
 }
 
@@ -183,27 +212,9 @@ bool FramePoolScreencap::init()
 
     HRESULT ret = S_OK;
 
-    DXGI_SWAP_CHAIN_DESC swap_chain_desc = { };
-    swap_chain_desc.BufferCount = 1;
-    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.OutputWindow = hwnd_;
-    swap_chain_desc.SampleDesc.Count = 1;
-    swap_chain_desc.Windowed = TRUE;
-
-    ret = D3D11CreateDeviceAndSwapChain(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        0,
-        nullptr,
-        0,
-        D3D11_SDK_VERSION,
-        &swap_chain_desc,
-        dxgi_swap_chain_.put(),
-        d3d_device_.put(),
-        nullptr,
-        d3d_context_.put());
+    ret = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+        d3d_device_.put(), nullptr, d3d_context_.put());
 
     if (FAILED(ret)) {
         LogError << "D3D11CreateDeviceAndSwapChain failed" << VAR(ret);
@@ -267,7 +278,7 @@ bool FramePoolScreencap::init()
     }
 
     try {
-        cap_frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::Create(
+        cap_frame_pool_ = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
             d3d_device_interop,
             winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
             1,
@@ -348,6 +359,8 @@ void FramePoolScreencap::uninit()
     cap_item_ = nullptr;
     texture_desc_ = { 0 };
     last_capture_size_ = { };
+    d3d_context_ = nullptr;
+    d3d_device_ = nullptr;
 }
 
 bool FramePoolScreencap::check_and_handle_size_changed()
@@ -490,7 +503,7 @@ void FramePoolScreencap::try_include_secondary_windows()
     }
 
     try {
-        cap_session_.IncludeSecondaryWindows(true);
+        cap_session_.IncludeSecondaryWindows(false);
         LogInfo << "Secondary windows capture enabled successfully";
     }
     catch (const winrt::hresult_error& e) {

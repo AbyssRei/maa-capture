@@ -29,23 +29,24 @@
 
 MWS_NS_BEGIN
 
-class WlrScreencap : public ScreencapBase
+class WlrScreencap : public TargetScreencapBase
 {
 public:
     // output_index 选择截取的输出（显示器）：合成器广播 wl_output 的顺序，
     // 默认 0（第一个输出）；越界索引构造出的单元截图时会失败并记日志
-    explicit WlrScreencap(std::shared_ptr<WaylandClient> client, std::size_t output_index = 0)
-        : client_(std::move(client))
+    explicit WlrScreencap(std::shared_ptr<WaylandClient> client, CaptureTarget target)
+        : TargetScreencapBase(target, MAA_WS_METHOD_WLR)
+        , client_(std::move(client))
         , screencopy_manager_(client_->get_screencopy_manager())
         , shm_(client_->get_shm())
-        , output_(client_->get_output(output_index))
+        , output_(client_->get_output(target.output_index))
     {
     }
 
     virtual ~WlrScreencap() override = default;
 
 public:
-    virtual std::optional<Image> screencap() override;
+    virtual std::optional<Image> capture_image() override;
 
 private:
     bool check_buffer(int format, int width, int height, int stride) const;
@@ -59,6 +60,7 @@ private:
     std::shared_ptr<wl_output> output_;
     bool capture_waiting_ = false;
     bool capture_successful_ = false;
+    uint32_t frame_flags_ = 0;
     std::unique_ptr<MemfdBuffer> buffer_;
     std::unique_ptr<wl_shm_pool> shm_pool_;
     std::unique_ptr<wl_buffer> buffer_obj_;

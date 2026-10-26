@@ -1,103 +1,22 @@
-// ============================================================================
-// 示例：通过「外部继承接口」实现自定义截图单元
-//
-// 演示：
-//   1. 继承 mws::ScreencapBase 实现自己的截图单元
-//      （此处用纯色合成图代替真实截屏，实际可包装私有 API / 远程服务等）
-//   2. 通过 ScreencapMgr::register_unit 注册，与内置 6 种方式一起参与测速
-//   3. 只注册自定义单元（不启用内置方式），由自定义单元独立完成截图
-// ============================================================================
-
-#include <iostream>
-#include <memory>
-
-#include "maa-capture/Logger.h"
-#include "maa-capture/Image.hpp"
 #include "maa-capture/ScreencapMgr.h"
-
-using namespace mws;
-
-// ---- 外部继承接口实现 ----
-class SolidColorScreencap : public ScreencapBase
-{
-public:
-    SolidColorScreencap(Scalar color, int width, int height)
-        : color_(color)
-        , width_(width)
-        , height_(height)
-    {
+#include "maa-capture/MaaWSCustomScreencap.h"
+#include <memory>
+struct Provider : mws::ScreencapBase {
+    std::optional<mws::CaptureFrame> screencap() override {
+        mws::CaptureFrame f; f.image = mws::Image(1, 2, 3);
+        f.image.set_to(mws::Scalar(10,20,30));
+        f.source.struct_size = sizeof(f.source);
+        f.source.target_type = MAA_WS_TARGET_CUSTOM;
+        f.source.scope = MAA_WS_SCOPE_UNKNOWN;
+        f.source.verification = MAA_WS_VERIFY_PROVIDER;
+        f.source.pixel_semantics = MAA_WS_PIXELS_PROVIDER;
+        mws::copy_text(f.source.source_key, "sample");
+        return f;
     }
-
-    virtual std::optional<Image> screencap() override
-    {
-        Image mat(height_, width_, 3);
-        mat.set_to(color_); // BGR: 例如 Scalar(0, 0, 255) = 红色
-        return mat;
-    }
-
-    virtual void inactive() override
-    {
-        LogInfo << "SolidColorScreencap::inactive called";
-    }
-
-private:
-    Scalar color_;
-    int width_;
-    int height_;
 };
-
-// 先缩放显示信息
-static void print_image_info(const char* tag, const Image& img)
-{
-    std::cout << "[" << tag << "] " << img.cols << "x" << img.rows << " channels=" << img.channels() << std::endl;
-}
-
-int main()
-{
-    // 1) 与内置方式一起测速：默认 builtin_methods = Method_All，
-    //    调用 connect() 前注册的自定义单元也会参与测速
-    {
-        ScreencapMgr mgr;
-        mgr.register_unit("solid-color-red", std::make_shared<SolidColorScreencap>(Scalar(0, 0, 255), 640, 480));
-        mgr.register_unit("solid-color-green", std::make_shared<SolidColorScreencap>(Scalar(0, 255, 0), 640, 480));
-
-        if (!mgr.connect()) {
-            std::cerr << "connect failed (all methods unavailable)" << std::endl;
-            return 1;
-        }
-
-        std::cout << "selected unit: " << mgr.selected_unit_name() << std::endl;
-
-        Image image;
-        if (!mgr.screencap(image)) {
-            std::cerr << "screencap failed" << std::endl;
-            return 1;
-        }
-        print_image_info("mixed", image);
-
-        mgr.inactive();
-    }
-
-    // 2) 纯自定义：只注册外部实现的单元，不启用任何内置方式
-    {
-        ScreencapMgr mgr;
-        mgr.set_builtin_methods(Method_None);
-        mgr.register_unit("custom-only", std::make_shared<SolidColorScreencap>(Scalar(255, 0, 0), 320, 240));
-
-        if (!mgr.connect()) {
-            std::cerr << "connect failed" << std::endl;
-            return 1;
-        }
-
-        std::cout << "selected unit: " << mgr.selected_unit_name() << std::endl;
-
-        Image image;
-        if (!mgr.screencap(image)) {
-            std::cerr << "screencap failed" << std::endl;
-            return 1;
-        }
-        print_image_info("custom-only", image);
-    }
-
-    return 0;
+int main() {
+    if (MaaWSGetAbiVersion() != MAA_WS_ABI_VERSION) return 1;
+    mws::ScreencapMgr manager({mws::CaptureTarget::custom("sample")});
+    if (!manager.register_unit("sample", MAA_WS_SCOPE_UNKNOWN, 0, std::make_shared<Provider>()) || !manager.connect()) return 2;
+    return manager.screencap() ? 0 : 3;
 }

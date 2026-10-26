@@ -1,17 +1,12 @@
 #include "maa-capture/ScreencapMgr.h"
-
-#include "maa-capture/Logger.h"
-
+#include <chrono>
 #if defined(_WIN32)
 #include "maa-capture/Windows/DesktopDupScreencap.h"
 #include "maa-capture/Windows/DesktopDupWindowScreencap.h"
-#include "maa-capture/Windows/FramePoolScreencap.h"
-#include "maa-capture/Windows/FramePoolWithPseudoMinimizeScreencap.h"
 #include "maa-capture/Windows/GdiScreencap.h"
-#include "maa-capture/Windows/PrintWindowScreencap.h"
+#include "maa-capture/Windows/FramePoolWithPseudoMinimizeScreencap.h"
 #include "maa-capture/Windows/PrintWindowWithPseudoMinimizeScreencap.h"
 #include "maa-capture/Windows/ScreenDCScreencap.h"
-#include "Windows/Win32MonitorUtils.hpp"
 #elif defined(__APPLE__)
 #include "maa-capture/MacOS/ScreenCaptureKitScreencap.h"
 #else
@@ -19,273 +14,140 @@
 #include "maa-capture/Linux/PipeWireScreencap.h"
 #endif
 #if MWS_WLR_AVAILABLE
-#include "maa-capture/Linux/WaylandClient.h"
 #include "maa-capture/Linux/WlrScreencap.h"
 #endif
 #endif
-
-MWS_NS_BEGIN
-
-ScreencapMethod available_builtin_methods()
-{
+namespace mws {
+ScreencapMethod available_builtin_methods() {
 #if defined(_WIN32)
-    ScreencapMethod methods = Method_GDI | Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window | Method_PrintWindow | Method_ScreenDC;
+    return Method_GDI | Method_DXGI_DesktopDup | Method_DXGI_DesktopDup_Window | Method_PrintWindow | Method_ScreenDC
 #if MWS_FRAMEPOOL_AVAILABLE
-    methods |= Method_FramePool;
+        | Method_FramePool
 #endif
-    return methods;
+        ;
 #elif defined(__APPLE__)
     return Method_ScreenCaptureKit;
 #else
-    ScreencapMethod methods = Method_None;
+    return 0
 #if MWS_PIPEWIRE_AVAILABLE
-    methods |= Method_PipeWire;
+        | Method_PipeWire
 #endif
 #if MWS_WLR_AVAILABLE
-    methods |= Method_Wlr;
+        | Method_Wlr
 #endif
-    return methods;
+        ;
 #endif
 }
-
-ScreencapMgr::ScreencapMgr(void* hwnd)
-    : hwnd_(hwnd)
-{
+const char* method_name(uint64_t m) {
+    switch (m) {
+    case Method_GDI: return "GDI";
+    case Method_FramePool: return "FramePool";
+    case Method_DXGI_DesktopDup: return "DXGI_DesktopDup";
+    case Method_DXGI_DesktopDup_Window: return "DXGI_DesktopDup_Window";
+    case Method_PrintWindow: return "PrintWindow";
+    case Method_ScreenDC: return "ScreenDC";
+    case Method_PipeWire: return "PipeWire";
+    case Method_Wlr: return "Wlr";
+    case Method_ScreenCaptureKit: return "ScreenCaptureKit";
+    default: return "Custom";
+    }
 }
-
-bool ScreencapMgr::register_unit(std::string name, std::shared_ptr<ScreencapBase> unit)
-{
-    if (name.empty() || !unit) {
-        LogError << "Invalid unit" << VAR(name) << VAR_VOIDP(unit.get());
-        return false;
-    }
-
-    auto [it, inserted] = units_.insert_or_assign(name, UnitEntry { name, std::move(unit) });
-    if (!inserted) {
-        LogWarn << "Unit already registered, replaced" << VAR(it->second.name);
-    }
+ScreencapMgr::ScreencapMgr(CaptureOptions options) : options_(std::move(options)) {
+    if (!validate_options(options_, error_)) throw std::invalid_argument(error_.message);
+}
+ScreencapMgr::~ScreencapMgr() { try { inactive(); } catch (...) {} }
+bool ScreencapMgr::register_unit(std::string key, uint32_t scope, uint32_t valid_fields, std::shared_ptr<ScreencapBase> unit) {
+    if (connected_ || active_) return fail(capture_error(MAA_WS_INVALID_STATE, MAA_WS_STAGE_CREATE, "Cannot register after connection"));
+    if (options_.target.type != MAA_WS_TARGET_CUSTOM || key != options_.target.source_key || scope != target_scope(options_.target) ||
+        !unit || units_.contains(key) || (valid_fields & ~31u))
+        return fail(capture_error(MAA_WS_SOURCE_MISMATCH, MAA_WS_STAGE_CREATE, "Provider must match the custom target and declared scope"));
+    units_.emplace(std::move(key), std::move(unit)); custom_valid_fields_ = valid_fields; return true;
+}
+bool ScreencapMgr::validate_custom_frame(CaptureFrame& frame, uint32_t stage) {
+    if (options_.target.type != MAA_WS_TARGET_CUSTOM) return true;
+    auto& s = frame.source;
+    if (frame.image.empty() || frame.image.channels() != 3 || s.struct_size != sizeof(s) || s.target_type != MAA_WS_TARGET_CUSTOM
+        || !valid_text(s.source_key) || std::strcmp(s.source_key,options_.target.source_key) || s.scope != target_scope(options_.target)
+        || (s.valid_fields & ~31u) || (s.valid_fields & custom_valid_fields_) != custom_valid_fields_)
+        return fail(capture_error(MAA_WS_SOURCE_MISMATCH, stage, "Custom frame differs from the declared source"));
+    if (!valid_frame_geometry(s,frame.image.cols,frame.image.rows))
+        return fail(capture_error(MAA_WS_UNSUPPORTED_GEOMETRY,stage,"Custom frame has invalid geometry"));
+    s.method = 0; s.verification = MAA_WS_VERIFY_PROVIDER; s.pixel_semantics = MAA_WS_PIXELS_PROVIDER;
+    s.limitations |= MAA_WS_LIMIT_PROVIDER_IDENTITY;
+    s.pixel_width = frame.image.cols; s.pixel_height = frame.image.rows;
+    if (!s.timestamp_ns) s.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     return true;
 }
-
-void ScreencapMgr::set_builtin_methods(ScreencapMethod methods)
-{
-    builtin_methods_ = methods;
-}
-
-void ScreencapMgr::set_pipewire_target(int fd, std::uint32_t node_id)
-{
-    pipewire_fd_ = fd;
-    pipewire_node_id_ = node_id;
-}
-
-void ScreencapMgr::set_wlr_socket(std::string socket_name)
-{
-    wlr_socket_ = std::move(socket_name);
-}
-
-void ScreencapMgr::set_monitor_index(std::uint32_t index)
-{
-    monitor_index_ = static_cast<int>(index);
-}
-
-std::size_t ScreencapMgr::monitor_count() const
-{
+void ScreencapMgr::build_builtin_units() {
+    if (options_.target.type == MAA_WS_TARGET_CUSTOM) return;
+    uint64_t enabled = options_.methods;
+    if (!enabled) for (uint64_t bit = 1; bit <= Method_ScreenCaptureKit; bit <<= 1) {
+        MaaWSMethodCapabilities i {}; MaaWSError e {};
+        method_capabilities(bit, i, e);
+        const bool matching = options_.target.type == MAA_WS_TARGET_PIPEWIRE ? bit == Method_PipeWire
+            : options_.target.type == MAA_WS_TARGET_WLR ? bit == Method_Wlr : (i.scopes & target_scope(options_.target)) != 0;
+        if (i.available && matching) enabled |= bit;
+    }
+    const auto& t = options_.target;
+    const auto add = [&](uint64_t flag, auto create) { if ((enabled & flag) && !units_.contains(method_name(flag))) units_[method_name(flag)] = create(); };
 #if defined(_WIN32)
-    return win32::monitor_count();
+    add(Method_GDI, [&] { return std::make_shared<GdiScreencap>(t); });
+    add(Method_FramePool, [&] { return std::make_shared<FramePoolWithPseudoMinimizeScreencap>(t); });
+    add(Method_DXGI_DesktopDup, [&] { return std::make_shared<DesktopDupScreencap>(t); });
+    add(Method_DXGI_DesktopDup_Window, [&] { return std::make_shared<DesktopDupWindowScreencap>(t); });
+    add(Method_PrintWindow, [&] { return std::make_shared<PrintWindowWithPseudoMinimizeScreencap>(t); });
+    add(Method_ScreenDC, [&] { return std::make_shared<ScreenDCScreencap>(t); });
 #elif defined(__APPLE__)
-    return sck_monitor_count();
+    add(Method_ScreenCaptureKit, [&] { return std::make_shared<ScreenCaptureKitScreencap>(t); });
 #else
-    #if MWS_WLR_AVAILABLE
-    // 与 WlrScreencap 同源：临时连接 Wayland（使用 set_wlr_socket 的 socket），
-    // registry roundtrip 后才知道 wl_output 列表
-    WaylandClient client;
-    if (!client.connect(wlr_socket_)) {
-        LogWarn << "monitor_count: failed to connect Wayland, no output info" << VAR(wlr_socket_);
-        return 0;
-    }
-    return client.output_count();
-    #else
-    LogWarn << "monitor_count: Wlr unit not built (wayland-client missing), no output info";
-    return 0;
-    #endif
-#endif
-}
-
-std::optional<ScreencapMgr::MonitorInfo> ScreencapMgr::monitor_info(std::size_t index) const
-{
-    MonitorInfo info;
-#if defined(_WIN32)
-    if (!win32::monitor_info(index, info.primary, info.name)) {
-        return std::nullopt;
-    }
-    return info;
-#elif defined(__APPLE__)
-    if (!sck_monitor_info(static_cast<std::uint32_t>(index), info.primary, info.name)) {
-        return std::nullopt;
-    }
-    return info;
-#else
-    if (index >= monitor_count()) {
-        return std::nullopt;
-    }
-    // wl_output 的名称/主输出信息需绑定 output listener（协议 version >= 4），
-    // 暂不提供；索引本身即有效信息
-    return info;
-#endif
-}
-
-void ScreencapMgr::build_builtin_units()
-{
-    const auto enabled_methods = builtin_methods_ & available_builtin_methods();
-    const auto add = [&](ScreencapMethod flag, const char* name, auto&& create_unit) {
-        if (enabled_methods & flag) {
-            units_[name] = UnitEntry { name, create_unit() };
-            LogDebug << "Builtin unit added" << VAR(name);
-        }
-    };
-
-#if defined(_WIN32)
-    const HWND hwnd = static_cast<HWND>(hwnd_);
-    add(Method_GDI, "GDI", [&] { return std::make_shared<GdiScreencap>(hwnd); });
-    add(Method_FramePool, "FramePool", [&] { return std::make_shared<FramePoolWithPseudoMinimizeScreencap>(hwnd); });
-    // 整屏单元：显式显示器索引优先于 hwnd 定位（monitor_index_ < 0 时按原行为）
-    add(Method_DXGI_DesktopDup, "DXGI_DesktopDup", [&] { return std::make_shared<DesktopDupScreencap>(hwnd, monitor_index_); });
-    add(Method_DXGI_DesktopDup_Window, "DXGI_DesktopDup_Window", [&] { return std::make_shared<DesktopDupWindowScreencap>(hwnd); });
-    add(Method_PrintWindow, "PrintWindow", [&] { return std::make_shared<PrintWindowWithPseudoMinimizeScreencap>(hwnd); });
-    add(Method_ScreenDC, "ScreenDC", [&] { return std::make_shared<ScreenDCScreencap>(hwnd); });
-#elif defined(__APPLE__)
-    // hwnd_ 携带 CGWindowID（非 0 = 按窗口截取）；为 0 时整屏，可用显示器索引选择
-    const auto window_id = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(hwnd_));
-    const auto display_index = monitor_index_ >= 0 ? static_cast<std::uint32_t>(monitor_index_) : 0;
-    add(Method_ScreenCaptureKit, "ScreenCaptureKit", [&] { return std::make_shared<ScreenCaptureKitScreencap>(window_id, display_index); });
-#else
-    // Linux：单元按编译期可用性注册（依赖缺失时 CMake 已裁剪对应源文件）
 #if MWS_PIPEWIRE_AVAILABLE
-    if (builtin_methods_ & Method_PipeWire) {
-        if (pipewire_fd_ < 0 && pipewire_node_id_ == 0) {
-            // 无 portal fd 时必须显式指定节点, 否则会误连到任意节点
-            LogWarn << "PipeWire target not set (fd < 0 and node id = 0), skipping PipeWire unit";
-        }
-        else {
-            // 位掩码已在外层判断过，传 Method_All 保证 add 无条件注册
-            add(Method_All, "PipeWire", [&] { return std::make_shared<PipeWireScreencap>(pipewire_fd_, pipewire_node_id_); });
-        }
-    }
+    add(Method_PipeWire, [&] { return std::make_shared<PipeWireScreencap>(t); });
 #endif
 #if MWS_WLR_AVAILABLE
-    if (builtin_methods_ & Method_Wlr) {
+    if ((enabled & Method_Wlr) && !units_.contains("Wlr")) {
         auto client = std::make_shared<WaylandClient>();
-        if (client->connect(wlr_socket_)) {
-            // 显示器索引：合成器广播 wl_output 的顺序（默认 0）
-            const auto output_index = static_cast<std::size_t>(std::max(0, monitor_index_));
-            add(Method_All, "Wlr", [&] { return std::make_shared<WlrScreencap>(std::move(client), output_index); });
-        }
-        else {
-            LogWarn << "Failed to connect Wayland socket, skipping Wlr unit" << VAR(wlr_socket_);
-        }
+        if (client->connect(t.socket_name)) units_["Wlr"] = std::make_shared<WlrScreencap>(client, t);
+        else fail(capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CONNECT, "Cannot connect to Wayland socket"));
     }
 #endif
 #endif
 }
-
-bool ScreencapMgr::connect()
-{
-    connected_ = false;
-    selected_.reset();
-    selected_unit_name_.clear();
-
-    if (builtin_methods_ != Method_None) {
-        build_builtin_units();
-    }
-
-    if (units_.empty()) {
-        LogError << "No screencap method to test (register a unit or enable builtin methods)";
-        return false;
-    }
-
-    selected_ = speed_test();
-    if (!selected_) {
-        LogError << "failed to select screencap method";
-        return false;
-    }
-
-    connected_ = true;
-    return true;
-}
-
-std::shared_ptr<ScreencapBase> ScreencapMgr::speed_test()
-{
-    LogFunc;
-
-    std::string fastest_name;
-    std::shared_ptr<ScreencapBase> fastest;
-    auto cost = std::chrono::milliseconds::max();
-
-    auto check = [&](const std::string& name, std::chrono::steady_clock::time_point start) {
-        auto duration = duration_since(start);
-        if (duration < cost) {
-            fastest_name = name;
-            fastest = units_.at(name).unit;
-            cost = duration;
+bool ScreencapMgr::connect() {
+    inactive();
+    build_builtin_units();
+    if (units_.empty()) return fail(capture_error(MAA_WS_METHOD_UNAVAILABLE, MAA_WS_STAGE_CONNECT, "No matching capture provider"));
+    active_ = true;
+    auto best = std::chrono::steady_clock::duration::max();
+    try {
+        for (auto& [name, unit] : units_) {
+            unit->screencap(); // warm up
+            const auto start = std::chrono::steady_clock::now();
+            auto frame = unit->screencap();
+            if (!frame) { error_ = unit->last_error(); continue; }
+            if (!validate_custom_frame(*frame,MAA_WS_STAGE_CONNECT)) continue;
+            const auto duration = std::chrono::steady_clock::now() - start;
+            if (duration < best) { selected_ = unit; selected_unit_name_ = name; best = duration; }
         }
-        LogInfo << VAR(name) << VAR(duration);
-    };
-
-    for (auto& [name, entry] : units_) {
-        LogInfo << "Warming up" << VAR(name);
-        if (!entry.unit->screencap()) {
-            LogWarn << "failed to warm up" << VAR(name);
+        for (auto& [name, unit] : units_) if (unit != selected_) unit->inactive();
+        if (!selected_) {
+            active_ = false;
+            if (!error_.code) fail(capture_error(MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CONNECT, "All capture methods failed"));
+            return false;
         }
-
-        LogInfo << "Testing" << VAR(name);
-        auto now = std::chrono::steady_clock::now();
-        if (!entry.unit->screencap()) {
-            LogWarn << "failed to test" << VAR(name);
-            continue;
-        }
-        check(name, now);
-    }
-
-    if (!fastest) {
-        LogError << "cannot find any method to screencap!";
-        return nullptr;
-    }
-
-    // Pause unused producers and restore their temporary window state after probing.
-    for (auto& [name, entry] : units_) {
-        if (entry.unit != fastest) {
-            entry.unit->inactive();
-        }
-    }
-    LogInfo << "The fastest method is" << VAR(fastest_name) << VAR(cost);
-    selected_unit_name_ = fastest_name;
-    return fastest;
+        connected_ = true; return true;
+    } catch (...) { inactive(); throw; }
 }
-
-bool ScreencapMgr::screencap(Image& image)
-{
-    if (!connected_ || !selected_) {
-        LogError << "not connected or no selected unit";
-        return false;
-    }
-
-    auto opt = selected_->screencap();
-    if (!opt) {
-        LogError << "failed to screencap";
-        return false;
-    }
-
-    image = std::move(opt).value();
-    return true;
+std::optional<CaptureFrame> ScreencapMgr::screencap() {
+    if (!connected_ || !selected_) { fail(capture_error(MAA_WS_INVALID_STATE, MAA_WS_STAGE_CAPTURE, "Manager is not connected")); return {}; }
+    auto frame = selected_->screencap();
+    if (!frame) { error_ = selected_->last_error(); return {}; }
+    if (!validate_custom_frame(*frame,MAA_WS_STAGE_CAPTURE)) return {};
+    if (options_.target.type == MAA_WS_TARGET_CUSTOM) frame->image = frame->image.clone();
+    frame->source.frame_id = ++next_frame_;
+    return frame;
 }
-
-void ScreencapMgr::inactive()
-{
-    LogFunc;
-
-    for (auto& [name, entry] : units_) {
-        entry.unit->inactive();
-    }
+void ScreencapMgr::inactive() {
+    if (active_) for (auto& [name, unit] : units_) { try { unit->inactive(); } catch (...) {} }
+    active_ = false; connected_ = false; selected_.reset(); selected_unit_name_.clear();
 }
-
-MWS_NS_END
+}

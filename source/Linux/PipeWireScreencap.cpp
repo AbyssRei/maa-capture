@@ -305,9 +305,11 @@ static const struct spa_pod* make_video_format_pod(struct spa_pod_builder& b, bo
 // Lifecycle
 // ===========================================================================
 
-PipeWireScreencap::PipeWireScreencap(int pipewire_fd, uint32_t pipewire_node_id)
-    : pipewire_fd_(pipewire_fd)
-    , pipewire_node_id_(pipewire_node_id)
+PipeWireScreencap::PipeWireScreencap(CaptureTarget target)
+    : TargetScreencapBase(target, MAA_WS_METHOD_PIPEWIRE)
+    , pipewire_fd_(target.pipewire_fd)
+    , portal_source_(target.pipewire_fd >= 0)
+    , pipewire_node_id_(target.node_id)
 {
     // PipeWire global init is safe to call multiple times (uses an internal refcount).
     ::pw_init(nullptr, nullptr);
@@ -417,7 +419,7 @@ void PipeWireScreencap::inactive()
 // Screencap
 // ===========================================================================
 
-std::optional<Image> PipeWireScreencap::screencap()
+std::optional<Image> PipeWireScreencap::capture_image()
 {
     // 独立库接口没有独立 init() 阶段：首次调用时惰性建连
     if (!connected_ && !init()) {
@@ -506,9 +508,15 @@ bool PipeWireScreencap::pw_init()
         return false;
     }
 
-    if (pipewire_fd_ >= 0) {
+    if (portal_source_) {
+        if (portal_consumed_) {
+            error_ = capture_error(MAA_WS_INVALID_STATE,MAA_WS_STAGE_CONNECT,"Portal FD was consumed; create a new target with a newly authorized FD",method_);
+            return false;
+        }
         // 通过 portal 提供的 fd 连接远端 PipeWire 实例 (KDE/KWin 路径)
-        pw_core_ = pw_context_connect_fd(pw_context_, pipewire_fd_, nullptr, 0);
+        portal_consumed_ = true;
+        const int fd = std::exchange(pipewire_fd_, -1);
+        pw_core_ = pw_context_connect_fd(pw_context_, fd, nullptr, 0);
     }
     else {
         // 连接会话 PipeWire daemon (窗口捕获路径)
@@ -520,8 +528,7 @@ bool PipeWireScreencap::pw_init()
         return false;
     }
 
-    // pw_context_connect_fd takes ownership of pipewire_fd_
-    pipewire_fd_ = -1;
+    // A consumed portal descriptor must never turn into a daemon fallback.
 
     // Register core event listener for error detection (e.g. EPIPE on disconnect).
     static const struct pw_core_events core_events = {

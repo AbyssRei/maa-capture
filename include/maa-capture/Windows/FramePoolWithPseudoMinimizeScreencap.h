@@ -14,20 +14,23 @@ MWS_NS_BEGIN
 class FramePoolWithPseudoMinimizeScreencap : public ScreencapBase
 {
 public:
-    explicit FramePoolWithPseudoMinimizeScreencap(HWND hwnd)
-        : inner_(hwnd)
-        , helper_(hwnd)
+    explicit FramePoolWithPseudoMinimizeScreencap(CaptureTarget target)
+        : inner_(target)
+        , helper_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id)))
     {
     }
 
     virtual ~FramePoolWithPseudoMinimizeScreencap() override = default;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override
+    virtual std::optional<CaptureFrame> screencap() override
     {
+        if (!inner_.validate_source()) { error_ = inner_.last_error(); return {}; }
         helper_.start();
         helper_.ensure_not_minimized();
-        return inner_.screencap();
+        auto frame = inner_.screencap();
+        error_ = inner_.last_error();
+        return frame;
     }
 
     virtual void inactive() override

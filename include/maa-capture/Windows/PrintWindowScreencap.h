@@ -12,18 +12,19 @@
 
 MWS_NS_BEGIN
 
-class PrintWindowScreencap : public ScreencapBase
+class PrintWindowScreencap : public TargetScreencapBase
 {
 public:
-    explicit PrintWindowScreencap(HWND hwnd)
-        : hwnd_(hwnd)
+    explicit PrintWindowScreencap(CaptureTarget target)
+        : TargetScreencapBase(target, MAA_WS_METHOD_PRINTWINDOW)
+        , hwnd_(reinterpret_cast<HWND>(static_cast<uintptr_t>(target.window_id)))
     {
     }
 
     virtual ~PrintWindowScreencap() override = default;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override;
+    virtual std::optional<Image> capture_image() override;
 
 private:
     std::optional<Image> capture_window(HWND capture_hwnd);

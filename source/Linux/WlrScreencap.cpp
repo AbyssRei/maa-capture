@@ -7,7 +7,7 @@
 
 MWS_NS_BEGIN
 
-std::optional<Image> WlrScreencap::screencap()
+std::optional<Image> WlrScreencap::capture_image()
 {
     if (!client_->connected()) {
         return std::nullopt;
@@ -73,12 +73,13 @@ std::optional<Image> WlrScreencap::screencap()
         // nop
     };
     frame_listener.flags = [](void* data, struct zwlr_screencopy_frame_v1* frame, uint32_t flags) {
-        std::ignore = data;
+        static_cast<WlrScreencap*>(data)->frame_flags_ = flags;
         std::ignore = frame;
         LogDebug << "Capture flag" << VAR(flags);
     };
     capture_waiting_ = true;
     capture_successful_ = false;
+    frame_flags_ = 0;
     zwlr_screencopy_frame_v1_add_listener(screencopy_frame.get(), &frame_listener, this);
 
     while (capture_waiting_) {
@@ -127,13 +128,22 @@ std::optional<Image> WlrScreencap::screencap()
         return std::nullopt;
     }
 
+    Image converted;
     if (cvt_mode != COLOR_NONE) {
         LogDebug << "Converting buffer" << VAR(buffer_format_) << VAR(static_cast<int>(cvt_mode));
-        Image converted;
         cvt_color(raw, converted, cvt_mode);
-        return converted;
+    } else {
+        converted = raw.clone();
     }
-    return raw.clone();
+    if (frame_flags_ & ~uint32_t(ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT)) {
+        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY,MAA_WS_STAGE_CAPTURE,"Unknown Wlr frame orientation",method_);return {};
+    }
+    if (frame_flags_ & ZWLR_SCREENCOPY_FRAME_V1_FLAGS_Y_INVERT) {
+        Image flipped(converted.rows,converted.cols,3);
+        for(int y=0;y<converted.rows;++y) std::memcpy(flipped.data+y*flipped.step,converted.data+(converted.rows-1-y)*converted.step,flipped.step);
+        return flipped;
+    }
+    return converted;
 }
 
 bool WlrScreencap::check_buffer(int format, int width, int height, int stride) const

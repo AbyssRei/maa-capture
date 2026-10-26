@@ -9,6 +9,7 @@ MWS_NS_BEGIN
 PseudoMinimizeHelper::PseudoMinimizeHelper(HWND hwnd)
     : hwnd_(hwnd)
 {
+    owner_thread_ = GetWindowThreadProcessId(hwnd_, &owner_pid_);
 }
 
 PseudoMinimizeHelper::~PseudoMinimizeHelper()
@@ -18,6 +19,8 @@ PseudoMinimizeHelper::~PseudoMinimizeHelper()
 
 void PseudoMinimizeHelper::start()
 {
+    std::lock_guard lock(state_mutex_);
+    if (!same_window()) return;
     if (running_) {
         return;
     }
@@ -27,16 +30,15 @@ void PseudoMinimizeHelper::start()
     original_ex_style_ = GetWindowLongPtr(hwnd_, GWL_EXSTYLE);
     if (original_ex_style_ == 0 && GetLastError() != 0) {
         LogError << "GetWindowLongPtr failed" << VAR_VOIDP(hwnd_) << VAR(GetLastError());
+        return;
     }
     had_layered_style_ = (original_ex_style_ & WS_EX_LAYERED) != 0;
 
     // 如果窗口原本就有 WS_EX_LAYERED，尝试读取原始透明度
     if (had_layered_style_) {
-        DWORD flags = 0;
-        COLORREF color_key = 0;
-        if (!GetLayeredWindowAttributes(hwnd_, &color_key, &original_alpha_, &flags)) {
-            LogWarn << "GetLayeredWindowAttributes failed, defaulting alpha to 255" << VAR_VOIDP(hwnd_) << VAR(GetLastError());
-            original_alpha_ = 255;
+        if (!GetLayeredWindowAttributes(hwnd_, &original_color_key_, &original_alpha_, &original_layered_flags_)) {
+            LogWarn << "Cannot read layered window state safely" << VAR_VOIDP(hwnd_) << VAR(GetLastError());
+            return;
         }
     }
     else {
@@ -44,7 +46,6 @@ void PseudoMinimizeHelper::start()
     }
 
     running_ = true;
-    monitor_thread_ = std::thread(&PseudoMinimizeHelper::monitor_thread_func, this);
 
     LogInfo << "PseudoMinimizeHelper started" << VAR_VOIDP(hwnd_);
 }
@@ -57,9 +58,8 @@ void PseudoMinimizeHelper::stop()
 
     running_ = false;
 
-    if (monitor_thread_.joinable()) {
-        monitor_thread_.join();
-    }
+    std::lock_guard lock(state_mutex_);
+    if (!same_window()) { pseudo_minimized_ = false; return; }
 
     // 确保退出时恢复窗口状态
     if (pseudo_minimized_) {
@@ -75,38 +75,23 @@ void PseudoMinimizeHelper::stop()
 
 void PseudoMinimizeHelper::ensure_not_minimized()
 {
-    if (!IsWindow(hwnd_)) {
+    std::lock_guard lock(state_mutex_);
+    if (!same_window()) {
         return;
     }
+    LASTINPUTINFO input { sizeof(input) };
+    if (pseudo_minimized_ && GetForegroundWindow() == hwnd_ && GetLastInputInfo(&input) && input.dwTime != pseudo_input_time_)
+        revert_pseudo_minimize();
 
     if (IsIconic(hwnd_)) {
         apply_pseudo_minimize();
     }
 }
 
-void PseudoMinimizeHelper::monitor_thread_func()
-{
-    LogFunc;
-
-    while (running_) {
-        if (!IsWindow(hwnd_)) {
-            LogWarn << "Window no longer valid, stopping monitor";
-            pseudo_minimized_ = false;
-            break;
-        }
-
-        // ensure_not_minimized() 已在 screencap 前同步处理最小化→伪最小化，
-        // 此处仅处理伪最小化→恢复（用户重新激活窗口时）
-        if (pseudo_minimized_ && GetForegroundWindow() == hwnd_) {
-            revert_pseudo_minimize();
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-}
-
 void PseudoMinimizeHelper::apply_pseudo_minimize()
 {
+    std::lock_guard lock(state_mutex_);
+    if (!running_ || !same_window()) return;
     LogInfo << "Applying pseudo-minimize" << VAR_VOIDP(hwnd_);
 
     // 1. 添加 WS_EX_LAYERED 和 WS_EX_TRANSPARENT 样式
@@ -125,10 +110,13 @@ void PseudoMinimizeHelper::apply_pseudo_minimize()
     // 2. 设置完全透明
     if (!SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA)) {
         LogError << "SetLayeredWindowAttributes failed in apply" << VAR_VOIDP(hwnd_) << VAR(GetLastError());
+        SetWindowLongPtr(hwnd_, GWL_EXSTYLE, original_ex_style_);
         return;
     }
 
     // 3. 以不激活方式还原窗口，使截图方式能工作
+    LASTINPUTINFO input { sizeof(input) };
+    if (GetLastInputInfo(&input)) pseudo_input_time_ = input.dwTime;
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
     pseudo_minimized_ = true;
@@ -136,6 +124,8 @@ void PseudoMinimizeHelper::apply_pseudo_minimize()
 
 void PseudoMinimizeHelper::revert_pseudo_minimize()
 {
+    std::lock_guard lock(state_mutex_);
+    if (!same_window()) { pseudo_minimized_ = false; return; }
     LogInfo << "Reverting pseudo-minimize" << VAR_VOIDP(hwnd_);
 
     // 1. 直接恢复到保存的原始扩展样式，避免位操作导致的样式丢失
@@ -146,12 +136,18 @@ void PseudoMinimizeHelper::revert_pseudo_minimize()
 
     // 2. 恢复透明度（需在恢复样式之后，因为原样式可能不含 WS_EX_LAYERED）
     if (had_layered_style_) {
-        if (!SetLayeredWindowAttributes(hwnd_, 0, original_alpha_, LWA_ALPHA)) {
+        if (!SetLayeredWindowAttributes(hwnd_, original_color_key_, original_alpha_, original_layered_flags_)) {
             LogError << "SetLayeredWindowAttributes failed in revert" << VAR_VOIDP(hwnd_) << VAR(GetLastError());
         }
     }
 
     pseudo_minimized_ = false;
+}
+
+bool PseudoMinimizeHelper::same_window() const
+{
+    DWORD pid = 0;
+    return IsWindow(hwnd_) && GetWindowThreadProcessId(hwnd_, &pid) == owner_thread_ && pid == owner_pid_;
 }
 
 MWS_NS_END

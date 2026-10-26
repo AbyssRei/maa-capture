@@ -22,13 +22,6 @@
 #define MWS_NS_BEGIN namespace mws {
 #define MWS_NS_END }
 
-// 控制缩放的旧版兼容分支（与 MaaFramework 的 MAA_WIN32_COMPATIBLE 对应）：
-// 默认使用 Per-Monitor V2 DPI 感知 + GetDpiForWindow；定义本宏则退化为
-// 基于 GetMonitorInfo/EnumDisplaySettings 的缩放比计算。
-#ifndef MWS_WIN32_COMPATIBLE
-#define MWS_WIN32_COMPATIBLE 0
-#endif
-
 // FramePool (Windows.Graphics.Capture) 是否可用。
 // 由 CMake 检测 Windows SDK + C++/WinRT 后定义（MWS_ENABLE_FRAMEPOOL）。
 #ifndef MWS_FRAMEPOOL_AVAILABLE

@@ -1,36 +1,19 @@
 #include "maa-capture/Windows/DesktopDupScreencap.h"
 
-#include "Win32MonitorUtils.hpp"
-
 #include "maa-capture/Windows/HwndUtils.hpp"
 #include "maa-capture/Logger.h"
 
 MWS_NS_BEGIN
-
-// ---------------------------------------------------------------------------
-// 显示器索引 → HMONITOR
-// ---------------------------------------------------------------------------
-
-// 按索引取 HMONITOR：主显示器固定排到索引 0（枚举顺序见 Win32MonitorUtils，
-// 与 ScreencapMgr 的显示器查询 API 共用同一排序）。index 越界返回 nullptr。
-static HMONITOR monitor_from_index(int index)
-{
-    const auto monitors = win32::monitors_primary_first();
-    if (index < 0 || index >= static_cast<int>(monitors.size())) {
-        return nullptr;
-    }
-    return monitors[static_cast<std::size_t>(index)];
-}
 
 DesktopDupScreencap::~DesktopDupScreencap()
 {
     uninit();
 }
 
-std::optional<Image> DesktopDupScreencap::screencap()
+std::optional<Image> DesktopDupScreencap::capture_image()
 {
     // 初始化 D3D 设备和 DXGI 工厂（只需要初始化一次）
-    if (!d3d_device_) {
+    if (!dxgi_factory_) {
         if (!init()) {
             LogError << "failed to init_d3d_device";
             uninit();
@@ -68,91 +51,58 @@ std::optional<Image> DesktopDupScreencap::screencap()
 
 bool DesktopDupScreencap::init()
 {
-    LogFunc;
-
-    if (!init_d3d_device()) {
-        return false;
-    }
-
-    if (!init_dxgi_factory()) {
-        return false;
-    }
-
-    return true;
+    return init_dxgi_factory();
 }
 
 bool DesktopDupScreencap::ensure_output_for_monitor()
 {
-    // 获取目标显示器：显式索引优先，其次 hwnd 定位，均未命中走主显示器
-    HMONITOR target_monitor = nullptr;
-    if (monitor_index_ >= 0) {
-        target_monitor = monitor_from_index(monitor_index_);
-        if (!target_monitor) {
-            LogWarn << "monitor index out of range, falling back to primary monitor" << VAR(monitor_index_);
-        }
-    }
-    else if (hwnd_) {
-        target_monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-        if (!target_monitor) {
-            LogWarn << "MonitorFromWindow failed, falling back to primary monitor";
-        }
-    }
-
-    // 如果显示器没有改变，且输出已初始化，则不需要重新初始化
-    if (target_monitor == current_monitor_ && dxgi_dup_) {
-        return true;
-    }
-
-    // 显示器改变了或首次初始化，需要重新设置输出
-    // 先释放旧的输出和纹理（因为分辨率可能改变了）
-    if (dxgi_dup_) {
-        dxgi_dup_->Release();
-        dxgi_dup_ = nullptr;
-    }
-    if (readable_texture_) {
-        readable_texture_->Release();
-        readable_texture_ = nullptr;
-    }
-    if (dxgi_output_) {
-        dxgi_output_->Release();
-        dxgi_output_ = nullptr;
-    }
-    if (dxgi_adapter_) {
-        dxgi_adapter_->Release();
-        dxgi_adapter_ = nullptr;
-    }
-
-    // 尝试根据显示器查找输出，如果失败则使用主显示器
-    bool found_output = false;
-    if (target_monitor) {
-        found_output = find_output_by_monitor(target_monitor);
-    }
-
-    if (!found_output) {
-        if (!init_primary_output()) {
-            return false;
-        }
-        current_monitor_ = nullptr; // 使用主显示器
-    }
-    else {
-        current_monitor_ = target_monitor;
-    }
-
-    if (!init_output_duplication()) {
+    HMONITOR target_monitor = target_.type == MAA_WS_TARGET_MONITOR
+        ? reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(source_.native_id))
+        : reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(source_.monitor.native_id));
+    if (!target_monitor) {
+        error_ = capture_error(MAA_WS_TARGET_NOT_FOUND, MAA_WS_STAGE_CAPTURE, "Target has no DXGI monitor", method_);
         return false;
     }
-
-    // 标记输出刚初始化，需要跳过前几张空白图片
+    if (target_monitor == current_monitor_ && dxgi_dup_ && output_layout_ == source_.layout_before) return true;
+    uninit();
+    if (!init_dxgi_factory() || !find_output_by_monitor(target_monitor)) {
+        error_ = capture_error(MAA_WS_TARGET_NOT_FOUND, MAA_WS_STAGE_CAPTURE, "Requested DXGI output is absent", method_);
+        return false;
+    }
+    DXGI_OUTPUT_DESC desc {};
+    const auto hr = dxgi_output_->GetDesc(&desc);
+    if (FAILED(hr) || desc.Monitor != target_monitor || !desc.AttachedToDesktop) {
+        error_ = capture_error(MAA_WS_SOURCE_MISMATCH, MAA_WS_STAGE_CAPTURE, "DXGI output differs from resolved target", method_, hr, "HRESULT");
+        return false;
+    }
+    if (desc.Rotation != DXGI_MODE_ROTATION_IDENTITY && desc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED) {
+        error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Rotated DXGI output is not implemented", method_);
+        return false;
+    }
+    auto r = desc.DesktopCoordinates;
+    if (target_.type == MAA_WS_TARGET_MONITOR) {
+        if (source_.desktop_rect.x != r.left || source_.desktop_rect.y != r.top ||
+            source_.pixel_width != uint32_t(r.right-r.left) || source_.pixel_height != uint32_t(r.bottom-r.top)) {
+            error_ = capture_error(MAA_WS_LAYOUT_CHANGED, MAA_WS_STAGE_CAPTURE, "DXGI and display configuration disagree", method_); return false;
+        }
+    } else {
+        const auto& w = source_.desktop_rect;
+        if (w.x < r.left || w.y < r.top || w.x+w.width > r.right || w.y+w.height > r.bottom) {
+            error_ = capture_error(MAA_WS_UNSUPPORTED_GEOMETRY, MAA_WS_STAGE_CAPTURE, "Window spans outputs or extends beyond the selected output", method_); return false;
+        }
+    }
+    if (!init_d3d_device() || !init_output_duplication()) return false;
+    current_monitor_ = target_monitor;
+    output_layout_ = source_.layout_before;
     output_just_initialized_ = true;
-
     return true;
 }
 
 bool DesktopDupScreencap::init_d3d_device()
 {
     HRESULT ret = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
+        dxgi_adapter_,
+        D3D_DRIVER_TYPE_UNKNOWN,
         nullptr,
         0,
         nullptr,
@@ -170,7 +120,7 @@ bool DesktopDupScreencap::init_d3d_device()
 
 bool DesktopDupScreencap::init_dxgi_factory()
 {
-    HRESULT ret = CreateDXGIFactory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&dxgi_factory_));
+    HRESULT ret = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&dxgi_factory_));
     if (FAILED(ret)) {
         LogError << "CreateDXGIFactory failed" << VAR(ret);
         return false;
@@ -239,39 +189,11 @@ bool DesktopDupScreencap::find_output_by_monitor(HMONITOR monitor)
     return false;
 }
 
-bool DesktopDupScreencap::init_primary_output()
-{
-    HRESULT ret = dxgi_factory_->EnumAdapters(0, &dxgi_adapter_);
-    if (FAILED(ret)) {
-        LogError << "EnumAdapters failed" << VAR(ret);
-        return false;
-    }
-
-    IDXGIOutput* output = nullptr;
-    ret = dxgi_adapter_->EnumOutputs(0, &output);
-    if (FAILED(ret) || !output) {
-        LogError << "EnumOutputs failed" << VAR(ret);
-        return false;
-    }
-    OnScopeLeave([&]() {
-        if (output) {
-            output->Release();
-        }
-    });
-
-    ret = output->QueryInterface(__uuidof(IDXGIOutput1), reinterpret_cast<void**>(&dxgi_output_));
-    if (FAILED(ret) || !dxgi_output_) {
-        LogError << "QueryInterface IDXGIOutput1 failed" << VAR(ret);
-        return false;
-    }
-
-    return true;
-}
-
 bool DesktopDupScreencap::init_output_duplication()
 {
     HRESULT ret = dxgi_output_->DuplicateOutput(d3d_device_, &dxgi_dup_);
     if (FAILED(ret)) {
+        error_ = capture_error(ret == E_ACCESSDENIED ? MAA_WS_PERMISSION_DENIED : MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "DuplicateOutput failed", method_, ret, "HRESULT");
         LogError << "DuplicateOutput failed" << VAR(ret);
         return false;
     }
@@ -365,6 +287,7 @@ std::optional<Image> DesktopDupScreencap::screencap_impl()
         return std::nullopt;
     }
     if (FAILED(ret)) {
+        error_ = capture_error(ret == DXGI_ERROR_WAIT_TIMEOUT ? MAA_WS_TIMEOUT : MAA_WS_CAPTURE_FAILED, MAA_WS_STAGE_CAPTURE, "AcquireNextFrame failed", method_, ret, "HRESULT");
         LogError << "AcquireNextFrame failed" << VAR(ret);
         return std::nullopt;
     }
@@ -406,7 +329,7 @@ std::optional<Image> DesktopDupScreencap::screencap_impl()
     OnScopeLeave([&]() { d3d_context_->Unmap(readable_texture_, 0); });
 
     Image mat = Image::wrap(texture_desc_.Height, texture_desc_.Width, 4, mapped.pData, mapped.RowPitch);
-    return mat;
+    return mat.clone();
 }
 
 MWS_NS_END

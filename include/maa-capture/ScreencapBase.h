@@ -1,36 +1,28 @@
 #pragma once
-
-// ============================================================================
-// ★ 外部继承接口（截图单元抽象基类）
-//
-// 提取自 MaaFramework source/MaaWin32ControlUnit/Base/UnitBase.h 的 ScreencapBase。
-//
-// 这是本库对外提供的「截图功能外部继承接口」之一：
-// 外部使用者可以实现自己的截图单元（例如包装私有 API、远程服务、特定设备），
-// 然后通过 ScreencapMgr::register_unit 注册进统一的测速选择器。
-//
-// 使用示例见 sample/external_cpp_interface.cpp
-// ============================================================================
-
 #include <optional>
-
-#include "Common.h"
-#include "Image.hpp"
-
+#include "CaptureTypes.hpp"
 MWS_NS_BEGIN
-
-class ScreencapBase
-{
+class ScreencapBase {
 public:
     virtual ~ScreencapBase() = default;
-
-public:
-    // 截图：返回 BGR 三通道图像（与 MaaFramework 内部约定一致）。
-    // 失败时返回 std::nullopt。
-    virtual std::optional<Image> screencap() = 0;
-
-    // 释放资源 / 恢复窗口状态（伪最小化等）。可选覆写。
-    virtual void inactive() { }
+    virtual std::optional<CaptureFrame> screencap() = 0;
+    virtual void inactive() {}
+    virtual const MaaWSError& last_error() const { return error_; }
+protected:
+    MaaWSError error_ = capture_error(MAA_WS_OK, 0, "");
 };
-
+/* Shared native source transaction; pixel helpers copy while native buffers
+ * are valid. Publication requires before/after verification of this source. */
+class TargetScreencapBase : public ScreencapBase {
+public:
+    TargetScreencapBase(CaptureTarget target, uint64_t method) : target_(std::move(target)), method_(method) {}
+    std::optional<CaptureFrame> screencap() override;
+    bool validate_source();
+protected:
+    virtual std::optional<Image> capture_image() = 0;
+    const CaptureTarget target_;
+    const uint64_t method_;
+    MaaWSFrameInfo source_ {};
+    uint64_t process_identity_ = 0;
+};
 MWS_NS_END

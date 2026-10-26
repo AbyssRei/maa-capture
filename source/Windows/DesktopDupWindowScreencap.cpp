@@ -8,7 +8,7 @@
 
 MWS_NS_BEGIN
 
-std::optional<Image> DesktopDupWindowScreencap::screencap()
+std::optional<Image> DesktopDupWindowScreencap::capture_image()
 {
     if (!hwnd_) {
         LogError << "hwnd_ is nullptr";
@@ -19,13 +19,10 @@ std::optional<Image> DesktopDupWindowScreencap::screencap()
         LogWarn << "Failed to ensure foreground window before screencap";
     }
 
-    // Ensure the window is fully visible on the monitor before screencap
-    if (!ensure_window_on_screen(hwnd_)) {
-        LogWarn << "Failed to ensure window on screen";
-    }
+
 
     // 调用基类方法获取全屏截图（BGR格式）
-    auto opt_img = DesktopDupScreencap::screencap();
+    auto opt_img = DesktopDupScreencap::capture_image();
     if (!opt_img) {
         return std::nullopt;
     }

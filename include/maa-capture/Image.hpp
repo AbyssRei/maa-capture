@@ -22,6 +22,8 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <limits>
+#include <stdexcept>
 
 #include "Common.h"
 
@@ -183,6 +185,9 @@ public:
             channels_ = 0;
             return;
         }
+        if (static_cast<std::size_t>(cols_) > std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(channels)
+            || step > std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(rows_))
+            throw std::overflow_error("Image dimensions overflow address space");
         const std::size_t total = step * static_cast<std::size_t>(rows_);
         auto buffer = std::make_shared<Buffer>();
         buffer->owned = std::make_shared<std::uint8_t[]>(total);
@@ -204,6 +209,10 @@ public:
         img.cols = cols_;
         img.channels_ = channels;
         img.step = external_step > 0 ? external_step : static_cast<std::size_t>(cols_) * channels;
+        if (static_cast<std::size_t>(cols_) > std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(channels)
+            || img.step < static_cast<std::size_t>(cols_) * channels
+            || img.step > std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(rows_))
+            return Image();
         auto buffer = std::make_shared<Buffer>();
         buffer->base = static_cast<std::uint8_t*>(external);
         buffer->size = img.step * static_cast<std::size_t>(rows_);
@@ -232,7 +241,7 @@ public:
     // ROI 视图（对应 cv::Mat mat(rect)）：共享底层缓冲，拷贝/生命周期安全
     Image roi(int x, int y, int w, int h) const
     {
-        if (empty() || w <= 0 || h <= 0) {
+        if (empty() || w <= 0 || h <= 0 || x < 0 || y < 0 || x > cols || y > rows || w > cols - x || h > rows - y) {
             return Image();
         }
         Image view;

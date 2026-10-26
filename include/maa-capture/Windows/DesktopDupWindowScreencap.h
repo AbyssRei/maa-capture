@@ -13,15 +13,15 @@ MWS_NS_BEGIN
 class DesktopDupWindowScreencap : public DesktopDupScreencap
 {
 public:
-    explicit DesktopDupWindowScreencap(HWND hwnd)
-        : DesktopDupScreencap(hwnd)
+    explicit DesktopDupWindowScreencap(CaptureTarget target)
+        : DesktopDupScreencap(target, MAA_WS_METHOD_DXGI_DESKTOP_DUP_WINDOW)
     {
     }
 
     virtual ~DesktopDupWindowScreencap() override = default;
 
 public: // from ScreencapBase
-    virtual std::optional<Image> screencap() override;
+    virtual std::optional<Image> capture_image() override;
 
 private:
     RECT get_window_client_rect_screen() const;

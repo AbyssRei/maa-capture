@@ -54,10 +54,10 @@ struct spa_pod;
 
 MWS_NS_BEGIN
 
-class PipeWireScreencap : public ScreencapBase
+class PipeWireScreencap : public TargetScreencapBase
 {
 public:
-    explicit PipeWireScreencap(int pipewire_fd, uint32_t pipewire_node_id);
+    explicit PipeWireScreencap(CaptureTarget target);
     ~PipeWireScreencap() override;
 
     PipeWireScreencap(const PipeWireScreencap&) = delete;
@@ -69,7 +69,7 @@ public:
     void close();
     bool connected() const;
 
-    std::optional<Image> screencap() override;
+    std::optional<Image> capture_image() override;
 
     void inactive() override;
 
@@ -95,6 +95,8 @@ private:
 
     /* PipeWire state */
     int pipewire_fd_ = -1;
+    const bool portal_source_;
+    bool portal_consumed_ = false;
     uint32_t pipewire_node_id_ = 0;
 
     /* ---- Internal state ---- */
