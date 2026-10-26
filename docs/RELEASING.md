@@ -4,6 +4,11 @@
 同步 CMake、Python 元数据/__version__、Node、Rust/Cargo.lock、C# 工程和 CHANGELOG。
 本仓库只接受三段稳定版本；不覆盖已发布资产。
 
+公共 C ABI 与 SDK/绑定的 SemVer 分别判断。窗口修复与高级捕获策略保留 C ABI 2，
+但 Rust/Go 的公开帧结构新增字段，C++ SDK 的布局及可复制性发生不兼容变化，
+应提升软件 MAJOR；不因 C ABI 未变而将这些源代码兼容性变化作为 MINOR 发布。
+SONAME/install-name 继续跟随 C ABI 2。
+
 先让实现提交的分支 CI 完成，再单独创建版本提升提交并推送；验证该提交后，另行推送附注标签 v<version>。
 版本提交与标签不得合并在同一次 push 中。
 标签必须与源码版本一致。发布依赖各平台构建/测试、六语言检查、
