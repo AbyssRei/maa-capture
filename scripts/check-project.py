@@ -31,7 +31,7 @@ assert all(url == repository_url for url in pyproject["project"]["urls"].values(
 package_readme = (ROOT / "bindings/python/README.md").read_text(encoding="utf-8")
 assert f"[maa-capture]({repository_url})" in package_readme, "Incorrect package README repository link"
 assert "codeberg.org/AbyssRei/" not in package_readme, "Obsolete repository URL in package README"
-paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
+paths = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=ROOT).decode().split("\0")
 # Construct legacy spellings so this validator does not introduce them into the tree.
 legacy = re.compile(r"Maa" + r"Win32Screencap|maa_" + r"win32_screencap|maa-" + r"win32-screencap|maa\." + r"win32\.screencap", re.I)
 retired = re.compile(r"(?:Maa" + r"Screencap|maa_" + r"screencap|maa-" + r"screencap|maa\." + r"screencap)(?![A-Za-z0-9_])", re.I)
@@ -51,3 +51,6 @@ log = subprocess.check_output(["git", "log", "--format=%s", "HEAD"], cwd=ROOT).d
 conventional = re.compile(r"(?:feat|fix|build|chore|ci|docs|style|refactor|perf|test|revert)(?:\([\w.-]+\))?!?: .+")
 assert all(conventional.fullmatch(subject) for subject in log), "Invalid Conventional Commit subject"
 print(f"maa-capture {version}: package versions, names and {len(log)} commit subjects OK")
+assert "#define MAA_WS_ABI_VERSION 2u" in (ROOT / "include/maa-capture/CaptureTypes.h").read_text()
+assert "SOVERSION 2" in cmake
+subprocess.run(["python", str(ROOT / "scripts/generate-ffi.py"), "--check"], check=True)

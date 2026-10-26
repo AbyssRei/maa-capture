@@ -1,493 +1,271 @@
 name: 构建与发布
-run-name: 构建与发布 ${{ github.ref_name }}
-
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # 发布标签不取消在跑实例，确保发版流程完整执行
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-
 permissions:
   contents: read
-
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 defaults:
   run:
     shell: pwsh
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build:
-    name: 构建与检查（${{ matrix.platform }}）
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # 三平台原生构建：Windows 为 Win32 单元（GDI/DXGI/FramePool/...），
-        # Linux 为 PipeWire + Wlr(Wayland) 单元，macOS 为 ScreenCaptureKit 单元
         include:
           - os: windows-latest
             platform: windows-x64
-            archive_ext: 7z
-            native_path: build/Release/maa-capture.dll
+            native: build/Release/maa-capture.dll
           - os: ubuntu-latest
             platform: linux-x64
-            archive_ext: tar.gz
-            native_path: build/libmaa-capture.so
+            native: build/libmaa-capture.so
           - os: macos-latest
             platform: macos-arm64
-            archive_ext: tar.gz
-            native_path: build/libmaa-capture.dylib
+            native: build/libmaa-capture.dylib
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: 安装 Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.x'
-          check-latest: true
-
-      - name: 安装 Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: current
-          check-latest: true
-
-      - name: 安装 Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '>=27'
-          check-latest: true
-
-      - name: 安装 .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: 检查项目版本、命名和提交约定
-        run: python scripts/check-project.py
-
-      - name: 安装 Linux 截图依赖
-        if: runner.os == 'Linux'
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v7
+        with: {python-version: '3.x'}
+      - uses: actions/setup-node@v7
+        with: {node-version: current}
+      - uses: actions/setup-java@v6
+        with: {distribution: temurin, java-version: '25'}
+      - uses: actions/setup-dotnet@v6
+        with: {dotnet-version: '10.0.x'}
+      - uses: actions/setup-go@v7
+        with: {go-version: stable}
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with: {toolchain: stable, cache: false}
+      - name: Check project and generated ABI
+        run: |
+          python scripts/check-project.py
+          if ($LASTEXITCODE) { throw 'Project check failed' }
+          python scripts/generate-ffi.py --check
+          if ($LASTEXITCODE) { throw 'Generated ABI differs from C header' }
+          python tests/test_release_assets.py
+          if ($LASTEXITCODE) { throw 'Provenance regression failed' }
+      - id: version
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('bindings/python/pyproject.toml','rb'))['project']['version'])"
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -cne "v$version") { throw 'Tag/version mismatch' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libdrm-dev libwayland-dev
-
-      - name: 安装 Rust 工具链
-        uses: actions-rust-lang/setup-rust-toolchain@v2
-        with:
-          cache: false
-          toolchain: stable
-
-      - name: 安装 Go 工具链
-        # macOS 镜像未预装 Go；统一安装保证三平台版本一致
-        uses: actions/setup-go@v7
-        with:
-          go-version: stable
-          check-latest: true
-
-      - name: 缓存 Rust 依赖
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: bindings/rust
-          # 发布标签与 main 保存缓存，PR 仅复用已有缓存
-          save-if: ${{ github.ref_type == 'tag' || github.ref == 'refs/heads/main' }}
-
-      - name: 读取版本并校验发布标签
-        id: version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          IS_TAG_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          sudo apt-get install -y libpipewire-0.3-dev libdrm-dev libwayland-dev
+      - name: Build and native regressions
         run: |
-          $cmakeLists = Get-Content -Raw CMakeLists.txt
-          if ($cmakeLists -notmatch 'project\s*\(\s*maa-capture\s+VERSION\s+(\d+\.\d+\.\d+)') {
-            throw '无法从 CMakeLists.txt 解析项目版本号。'
-          }
-          $version = $Matches[1]
-          if ($env:IS_TAG_PUSH -eq 'true' -and $env:RELEASE_TAG -cne "v$version") {
-            throw "发布标签 '$env:RELEASE_TAG' 与 CMake 项目版本 'v$version' 不一致。"
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-
-      - name: 构建核心库（CMake）
-        run: |
-          # Windows 不固定 VS 生成器版本（镜像上是最新 VS），仅指定 x64；
-          # Linux/macOS 为单配置生成器，CMakeLists 已缺省 Release
-          $extra = if ($IsWindows) { @('-A', 'x64') } else { @() }
+          $extra = if ($IsWindows) { @('-A','x64') } else { @() }
           cmake -S . -B build @extra
-          if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败：$LASTEXITCODE" }
+          if ($LASTEXITCODE) { throw 'Configure failed' }
           cmake --build build --config Release --parallel
-          if ($LASTEXITCODE -ne 0) { throw "CMake 构建失败：$LASTEXITCODE" }
-
-          $libPath = if ($IsWindows) { 'build/Release/maa-capture.dll' }
-                     elseif ($IsLinux) { 'build/libmaa-capture.so' }
-                     else { 'build/libmaa-capture.dylib' }
-          if (-not (Test-Path $libPath -PathType Leaf)) {
-            throw "未找到构建产物：$libPath"
-          }
-          Write-Host "产物：$libPath"
-          $env:PYTHONPATH = (Resolve-Path 'bindings/python/src').Path
-          python bindings/python/tests/test_binding.py (Resolve-Path $libPath).Path
-          if ($LASTEXITCODE -ne 0) { throw 'Python 运行时绑定验证失败' }
-          Remove-Item Env:PYTHONPATH
-
-      - name: 原生回归与安装后消费验证
-        run: |
+          if ($LASTEXITCODE) { throw 'Build failed' }
           ctest --test-dir build -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw '原生 C API 回归失败' }
-          $prefix = Join-Path $env:RUNNER_TEMP 'maa-capture-install'
-          cmake --install build --config Release --prefix $prefix
-          if ($LASTEXITCODE -ne 0) { throw 'CMake 安装失败' }
-          $extra = if ($IsWindows) { @('-A', 'x64') } else { @() }
-          cmake -S tests/install-consumer -B build-consumer "-DCMAKE_PREFIX_PATH=$prefix" @extra
-          if ($LASTEXITCODE -ne 0) { throw '安装后 find_package 失败' }
-          cmake --build build-consumer --config Release --parallel
-          if ($LASTEXITCODE -ne 0) { throw '安装后消费者编译失败' }
-          if ($IsWindows) { $env:PATH = "$prefix/bin;$env:PATH" }
-          $consumer = if ($IsWindows) { './build-consumer/Release/maa_capture_consumer.exe' } else { './build-consumer/maa_capture_consumer' }
-          & $consumer
-          if ($LASTEXITCODE -ne 0) { throw '安装后消费者运行失败' }
-
-      - name: 验证 FramePool 禁用配置
+          if ($LASTEXITCODE) { throw 'Native regression failed' }
+          $savedPythonPath = $env:PYTHONPATH
+          try {
+            $env:PYTHONPATH = (Resolve-Path bindings/python/src).Path
+            python bindings/python/tests/test_binding.py (Resolve-Path '${{ matrix.native }}').Path
+            if ($LASTEXITCODE) { throw 'Python regression failed' }
+          } finally { $env:PYTHONPATH = $savedPythonPath }
+      - name: FramePool disabled build and full tests
         if: runner.os == 'Windows'
         run: |
           cmake -S . -B build-no-framepool -A x64 -DMWS_ENABLE_FRAMEPOOL=OFF -DMWS_BUILD_SAMPLES=OFF
-          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用配置失败' }
-          cmake --build build-no-framepool --config Release --target maa_capture_native_smoke --parallel
-          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用构建失败' }
+          if ($LASTEXITCODE) { throw 'Configure failed' }
+          cmake --build build-no-framepool --config Release --parallel
+          if ($LASTEXITCODE) { throw 'Build failed' }
           ctest --test-dir build-no-framepool -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw 'FramePool 禁用行为不一致' }
-
-      - name: 绑定编译检查（Go / Rust / Python / NodeJS / Java / C#）
+          if ($LASTEXITCODE) { throw 'No-FramePool regression failed' }
+      - name: Binding syntax and type checks
         run: |
-          $ErrorActionPreference = 'Stop'
-
-          # Go：纯 Go 路径（syscall.NewLazyDLL 仅存在于 windows 目标）；非 Windows 交叉编译
-          Push-Location bindings/golang
-          if (-not (Test-Path go.mod)) {
-            go mod init maa_capture | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "go mod init 失败：$LASTEXITCODE" }
-          }
-          $env:CGO_ENABLED = '0'
-          $env:GOOS = 'windows'
-          go build ./...
-          if ($LASTEXITCODE -ne 0) { throw "Go 绑定编译失败：$LASTEXITCODE" }
-          Remove-Item Env:GOOS, Env:CGO_ENABLED -ErrorAction SilentlyContinue
-          Pop-Location
-
-          # Rust：全平台 cargo check（类型检查，不链接）；Windows 额外用刚构建的
-          # 导入库做真实链接，验证 FFI 声明与导出符号一致
-          #（绑定声明 #[link(name = "user32")]，非 Windows 平台无法链接）
-          Push-Location bindings/rust
-          cargo check --locked --examples
-          if ($LASTEXITCODE -ne 0) { throw "Rust 绑定检查失败：$LASTEXITCODE" }
-          if ($IsWindows) {
-            $env:LIB = (Resolve-Path '../../build/Release').Path + ';' + $env:LIB
-            cargo build --locked --example demo
-            if ($LASTEXITCODE -ne 0) { throw "Rust 绑定链接失败：$LASTEXITCODE" }
-          }
-          Pop-Location
-
-          # Python：ctypes 运行时加载，做语法编译检查（py_compile 不执行 import，
-          # _win32.py 在非 Windows 平台也可安全编译）
-          $python = if ($IsWindows) { 'python' } else { 'python3' }
-          & $python -m py_compile `
-            bindings/python/src/maa_capture/__init__.py `
-            bindings/python/src/maa_capture/_core.py `
-            bindings/python/src/maa_capture/_loader.py `
-            bindings/python/src/maa_capture/_win32.py `
-            bindings/python/tests/test_binding.py
-          if ($LASTEXITCODE -ne 0) { throw "Python 绑定语法检查失败：$LASTEXITCODE" }
-
-          # NodeJS：按兼容范围解析最新 koffi，node --check 做语法检查
+          cargo check --locked --manifest-path bindings/rust/Cargo.toml --examples
+          if ($LASTEXITCODE) { throw 'Rust check failed' }
           Push-Location bindings/nodejs
-          npm install --no-package-lock --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw "npm install 失败：$LASTEXITCODE" }
-          foreach ($f in 'index.js', 'win32_helper.js', 'test.js') {
-            node --check $f
-            if ($LASTEXITCODE -ne 0) { throw "NodeJS 绑定语法检查失败：$f" }
-          }
-          Pop-Location
-
-          # Java：JNA 运行时加载，javac 编译绑定与示例
-          Push-Location bindings/java
-          ./fetch-jna.ps1
-          javac -encoding UTF-8 -d build-classes -cp .deps/jna.jar MaaCapture.java Sample.java
-          if ($LASTEXITCODE -ne 0) { throw "Java 绑定编译失败：$LASTEXITCODE" }
-          Pop-Location
-
-          # C#：P/Invoke 运行时加载，dotnet 编译绑定与自测工程
+          try {
+            npm install --no-package-lock --no-audit --no-fund
+            if ($LASTEXITCODE) { throw 'npm failed' }
+            npm run typecheck
+            if ($LASTEXITCODE) { throw 'Node typecheck failed' }
+          } finally { Pop-Location }
+          ./bindings/java/fetch-jna.ps1
+          javac -encoding UTF-8 -d bindings/java/build-classes -cp bindings/java/.deps/jna.jar bindings/java/NativeTypes.java bindings/java/MaaCapture.java bindings/java/Sample.java
+          if ($LASTEXITCODE) { throw 'Java compile failed' }
           dotnet build bindings/csharp/test/test.csproj
-          if ($LASTEXITCODE -ne 0) { throw "C# 绑定编译失败：$LASTEXITCODE" }
-
-      - name: 打包并校验发布包
-        env:
-          ARCHIVE_EXT: ${{ matrix.archive_ext }}
-          PLATFORM: ${{ matrix.platform }}
+          if ($LASTEXITCODE) { throw 'C# build failed' }
+          $savedGoOS=$env:GOOS; $savedCgo=$env:CGO_ENABLED
+          Push-Location bindings/golang
+          try {
+            $env:GOOS='windows'; $env:CGO_ENABLED='0'
+            go build ./...
+            if ($LASTEXITCODE) { throw 'Go pure build failed' }
+          } finally { $env:GOOS=$savedGoOS; $env:CGO_ENABLED=$savedCgo; Pop-Location }
+      - name: Windows binding callback and frame runtime tests
+        if: runner.os == 'Windows'
         run: |
-          $ErrorActionPreference = 'Stop'
-          $version = '${{ steps.version.outputs.version }}'
-          $archive = "maa-capture-v$version-$env:PLATFORM.$env:ARCHIVE_EXT"
-
-          $binDir = if ($IsWindows) { 'build/Release' } else { 'build' }
-          $staging = 'dist/staging/maa-capture'
-          if ($IsWindows) {
-            New-Item -ItemType Directory -Force -Path "$staging/bin", "$staging/lib" | Out-Null
-            # 产物：DLL / 导入库 / 调试符号
-            Copy-Item "$binDir/maa-capture.dll" "$staging/bin/"
-            Copy-Item "$binDir/maa-capture.lib" "$staging/lib/"
-            if (Test-Path "$binDir/maa-capture.pdb") {
-              Copy-Item "$binDir/maa-capture.pdb" "$staging/bin/"
-            }
-          }
-          else {
-            New-Item -ItemType Directory -Force -Path "$staging/lib" | Out-Null
-            Copy-Item "$binDir/libmaa-capture.*" "$staging/lib/"
-          }
-
-          # 源码树取自 git 跟踪文件的干净快照，避免把 CI 过程产物打进包里
-          cmake --install build --config Release --prefix (Join-Path (Get-Location) $staging)
-          if ($LASTEXITCODE -ne 0) { throw '安装发布 SDK 失败' }
-          git archive HEAD bindings sample docs README.md LICENSE CHANGELOG.md | tar -xf - -C $staging
-          if ($LASTEXITCODE -ne 0) { throw '发布文档快照失败' }
-
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          if ($IsWindows) {
-            Get-Command 7z -ErrorAction Stop | Out-Null
-            & 7z a -t7z "dist/$archive" "$staging"
-            if ($LASTEXITCODE -ne 0) { throw "打包失败：$LASTEXITCODE" }
-            & 7z t "dist/$archive"
-            if ($LASTEXITCODE -ne 0) { throw "发布包校验失败：$LASTEXITCODE" }
-          }
-          else {
-            & tar -czf "dist/$archive" -C dist/staging maa-capture
-            if ($LASTEXITCODE -ne 0) { throw "打包失败：$LASTEXITCODE" }
-            & tar -tzf "dist/$archive" | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "发布包校验失败：$LASTEXITCODE" }
-          }
-          "archive=$archive" >> $env:GITHUB_OUTPUT
-
-      - name: 上传发布包
-        uses: actions/upload-artifact@v7
+          $savedPath=$env:PATH; $savedLib=$env:LIB; $savedNative=$env:MAA_WS_LIB; $savedCgo=$env:CGO_ENABLED; $savedCC=$env:CC
+          try {
+            $nativeDir=(Resolve-Path build/Release).Path
+            $env:PATH="$nativeDir;$env:PATH"; $env:LIB="$nativeDir;$env:LIB"; $env:MAA_WS_LIB="$nativeDir/maa-capture.dll"
+            node bindings/nodejs/test.js
+            if ($LASTEXITCODE) { throw 'Node runtime failed' }
+            dotnet run --no-build --project bindings/csharp/test/test.csproj
+            if ($LASTEXITCODE) { throw 'C# runtime failed' }
+            java --enable-native-access=ALL-UNNAMED "-Djna.library.path=$nativeDir" -cp 'bindings/java/build-classes;bindings/java/.deps/jna.jar' maa.capture.Sample
+            if ($LASTEXITCODE) { throw 'Java runtime failed' }
+            cargo run --locked --manifest-path bindings/rust/Cargo.toml --example demo
+            if ($LASTEXITCODE) { throw 'Rust runtime failed' }
+            $env:LIB=$savedLib
+            $env:CGO_ENABLED='1'
+            $env:PATH="C:/Program Files/LLVM/bin;$env:PATH"; $env:CC='clang'
+            Push-Location bindings/golang
+            try {
+              go run ./test
+              if ($LASTEXITCODE) { throw 'Go cgo runtime failed' }
+            } finally { Pop-Location }
+          } finally { $env:PATH=$savedPath; $env:LIB=$savedLib; $env:MAA_WS_LIB=$savedNative; $env:CGO_ENABLED=$savedCgo; $env:CC=$savedCC }
+      - name: Package SDK with binary manifest
+        run: |
+          python scripts/package-sdk.py --platform '${{ matrix.platform }}'
+          if ($LASTEXITCODE) { throw 'SDK packaging failed' }
+      - name: Consume extracted SDK
+        run: |
+          python scripts/verify-sdk.py dist --platform '${{ matrix.platform }}'
+          if ($LASTEXITCODE) { throw 'Extracted SDK verification failed' }
+      - uses: actions/upload-artifact@v7
         with:
-          name: maa-capture-${{ matrix.platform }}
-          path: dist/maa-capture-v*
+          name: sdk-${{ matrix.platform }}
+          path: dist/*
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 30
-
-      - name: 上传原始原生库（供 Python 打包）
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
-          name: maa-capture-native-${{ matrix.platform }}
-          path: ${{ matrix.native_path }}
+          name: native-${{ matrix.platform }}
+          path: native/
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
   python-binding:
-    name: 打包 Python 绑定（PyPI）
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: 安装 Linux 截图依赖
-        # wheel 内置的 .so 链接 pipewire/wayland，冒烟安装需运行库在场
+      - uses: actions/checkout@v7
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: astral-sh/setup-uv@main
+      - uses: actions/download-artifact@v8
+        with: {pattern: 'native-*', path: native, merge-multiple: true}
+      - name: Build aggregated wheel, sdist, full source and provenance
+        run: |
+          Copy-Item native/* bindings/python/src/maa_capture/_native/ -Recurse -Force
+          uv build bindings/python --out-dir dist
+          if ($LASTEXITCODE) { throw 'Python package failed' }
+          uv run --python 3.12 --no-project scripts/check-python-dist.py dist --require-native
+          if ($LASTEXITCODE) { throw 'Distribution verification failed' }
+          python scripts/create-source-archive.py
+          if ($LASTEXITCODE) { throw 'Source archive failed' }
+      - uses: actions/download-artifact@v8
+        with: {pattern: 'sdk-*', path: dist, merge-multiple: true}
+      - name: Verify complete assets and hashes
+        run: |
+          python scripts/check-release-assets.py dist --version '${{ needs.build.outputs.version }}' --native native --create
+          if ($LASTEXITCODE) { throw 'Release provenance verification failed' }
+      - uses: actions/upload-artifact@v7
+        with: {name: release-assets, path: 'dist/*', if-no-files-found: error}
+  source-rebuild:
+    needs: [build, python-binding]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix: {os: [windows-latest, ubuntu-latest, macos-latest]}
+    steps:
+      - uses: actions/checkout@v7
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v7
+        with: {python-version: '3.x'}
+      - uses: actions/download-artifact@v8
+        with: {name: release-assets, path: dist}
+      - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libdrm-dev libwayland-dev
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@main
-        with:
-          enable-cache: false
-          version: latest
-
-      - name: 下载三平台原生库
-        uses: actions/download-artifact@v8
-        with:
-          pattern: maa-capture-native-*
-          path: native
-          merge-multiple: true
-
-      - name: 组装内置原生库并校验版本
+          sudo apt-get install -y libpipewire-0.3-dev libdrm-dev libwayland-dev
+      - name: Build exclusively from source asset and run installed consumer
         run: |
-          $native = 'bindings/python/src/maa_capture/_native'
-          New-Item -ItemType Directory -Force -Path "$native/windows-x64", "$native/linux-x64", "$native/macos-arm64" | Out-Null
-          Move-Item native/maa-capture.dll "$native/windows-x64/" -ErrorAction Stop
-          Move-Item native/libmaa-capture.so "$native/linux-x64/" -ErrorAction Stop
-          Move-Item native/libmaa-capture.dylib "$native/macos-arm64/" -ErrorAction Stop
-
-          $cmakeLists = Get-Content -Raw CMakeLists.txt
-          if ($cmakeLists -notmatch 'project\s*\(\s*maa-capture\s+VERSION\s+(\d+\.\d+\.\d+)') {
-            throw '无法从 CMakeLists.txt 解析项目版本号。'
-          }
-          $cmakeVersion = $Matches[1]
-          $pyproject = Get-Content -Raw bindings/python/pyproject.toml
-          if ($pyproject -notmatch '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"') {
-            throw '无法从 pyproject.toml 解析包版本号。'
-          }
-          $pyVersion = $Matches[1]
-          if ($cmakeVersion -ne $pyVersion) {
-            throw "版本不一致：CMake=$cmakeVersion pyproject=$pyVersion"
-          }
-          Write-Host "版本一致：v$cmakeVersion"
-
-      - name: 构建 sdist 与 wheel
+          python scripts/verify-source-archive.py dist
+          if ($LASTEXITCODE) { throw 'Source archive rebuild failed' }
+  final-wheel:
+    needs: [build, python-binding]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.12', '3.x']
+    steps:
+      - uses: actions/checkout@v7
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v7
+        with: {python-version: '${{ matrix.python }}'}
+      - uses: actions/download-artifact@v8
+        with: {name: release-assets, path: dist}
+      - if: runner.os == 'Linux'
         run: |
-          uv build bindings/python --out-dir dist-pypi
-          if ($LASTEXITCODE -ne 0) { throw 'Python 分发包构建失败' }
-          uv run --python '>=3.12' --no-project scripts/check-python-dist.py dist-pypi --require-native
-          if ($LASTEXITCODE -ne 0) { throw 'Python 分发包仓库链接校验失败' }
-
-      - name: 冒烟安装验证
+          sudo apt-get update
+          sudo apt-get install -y libpipewire-0.3-0 libwayland-client0
+      - name: Install final wheel and exercise bundled ABI, callbacks and errors
         run: |
-          uv venv smoke-venv
-          uv pip install --python smoke-venv dist-pypi/maa_capture-*.whl
-          # 导入即加载内置 .so；顺带验证新增 C API 符号（PipeWire/Wlr setter、
-          # 查询辅助——无 Wayland 的 CI 环境下 monitor_count 走连接失败路径返回 0）
-          smoke-venv/bin/python -c @'
-          import maa_capture as m
-          from maa_capture import Manager, available_methods
-          print("version:", m.__version__)
-          assert available_methods() != 0
-          mgr = Manager(methods=Manager.METHOD_NONE)
-          assert mgr.set_pipewire_target(-1, 0)
-          assert mgr.set_wlr_socket(None)
-          print("monitors:", mgr.monitor_count())
-          del mgr
-          print("smoke OK")
-          '@
-
-      - name: 上传 Python 分发物
-        uses: actions/upload-artifact@v7
-        with:
-          name: maa-capture-pypi-dist
-          path: dist-pypi/*
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: 下载完整发布资产用于预发布校验
-        uses: actions/download-artifact@v8
-        with:
-          pattern: maa-capture-*
-          path: release-check
-          merge-multiple: true
-
-      - name: 校验分支和标签的发布资产集合
-        run: |
-          $version = '${{ needs.build.outputs.version }}'
-          $expected = @(
-            "maa-capture-v$version-windows-x64.7z",
-            "maa-capture-v$version-linux-x64.tar.gz",
-            "maa-capture-v$version-macos-arm64.tar.gz",
-            "maa_capture-$version-py3-none-any.whl",
-            "maa_capture-$version.tar.gz"
-          )
-          foreach ($name in $expected) {
-            $path = Join-Path 'release-check' $name
-            if (-not (Test-Path $path -PathType Leaf) -or (Get-Item $path).Length -le 0) {
-              throw "发布资产缺失或为空：$name"
-            }
-          }
-          Write-Host '三平台原生包、wheel、sdist 发布资产齐全'
-
-  publish-pypi:
-    name: 发布 PyPI
+          python -m venv wheel-venv
+          $python=if($IsWindows){'wheel-venv/Scripts/python.exe'}else{'wheel-venv/bin/python'}
+          $wheel=(Get-ChildItem dist/*.whl).FullName
+          & $python -m pip install $wheel
+          if ($LASTEXITCODE) { throw 'Wheel installation failed' }
+          & $python bindings/python/tests/test_binding.py
+          if ($LASTEXITCODE) { throw 'Final wheel runtime failed' }
+  release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: python-binding
+    needs: [build, python-binding, final-wheel, source-rebuild]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v8
+        with: {name: release-assets, path: dist}
+      - run: |
+          python scripts/check-release-assets.py dist --version '${{ needs.build.outputs.version }}'
+          if ($LASTEXITCODE) { throw 'Release verification failed' }
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*.7z
+            dist/*.tar.gz
+            dist/*.whl
+            dist/*-provenance.json
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+  publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [final-wheel, source-rebuild]
+    runs-on: ubuntu-latest
     environment: pypi
-    permissions: {}
-    # secrets 不能直接用于 step 级 if 表达式，经由 job 级 env 间接判断
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
-      - name: 下载 Python 分发物
-        uses: actions/download-artifact@v8
-        with:
-          name: maa-capture-pypi-dist
-          path: dist-pypi
-
-      - name: 未配置 PYPI_API_TOKEN 时提示跳过
-        if: env.PYPI_API_TOKEN == ''
-        run: Write-Warning "未配置 PYPI_API_TOKEN secret，跳过 PyPI 发布（GitHub Release 仍会附带 wheel/sdist）。"
-
-      - name: 发布到 PyPI
+      - uses: actions/download-artifact@v8
+        with: {name: release-assets, path: dist}
+      - name: Select Python distributions
+        run: |
+          New-Item -ItemType Directory -Force dist-pypi | Out-Null
+          Copy-Item dist/maa_capture-* dist-pypi/
+      - uses: pypa/gh-action-pypi-publish@release/v1
         if: env.PYPI_API_TOKEN != ''
-        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist-pypi/
-
-  release:
-    name: 发布 GitHub Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, python-binding]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: 下载已验证的发布包
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          # 三个平台的产物直接合并到 dist/ 根（各 artifact 内是单个压缩包）
-          merge-multiple: true
-
-      - name: 下载 Python 分发物
-        uses: actions/download-artifact@v8
-        with:
-          name: maa-capture-pypi-dist
-          path: dist-pypi
-
-      - name: 校验发布包齐全
-        run: |
-          $version = '${{ needs.build.outputs.version }}'
-          $expected = @(
-            "dist/maa-capture-v$version-windows-x64.7z",
-            "dist/maa-capture-v$version-linux-x64.tar.gz",
-            "dist/maa-capture-v$version-macos-arm64.tar.gz"
-          )
-          foreach ($f in $expected) {
-            if (-not (Test-Path $f -PathType Leaf)) { throw "缺少发布包：$f" }
-          }
-          Write-Host "发布包齐全：$($expected -join ', ')"
-
-      - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          # 注意：dist/ 是合并下载目录（含 Python 分发物），平台压缩包必须用
-          # maa-capture-v* 前缀限定，避免 sdist 被 dist/ 与 dist-pypi/
-          # 两个 glob 重复匹配上传
-          files: |
-            dist/*.7z
-            dist/maa-capture-v*.tar.gz
-            dist-pypi/*.whl
-            dist-pypi/*.tar.gz
-          fail_on_unmatched_files: true
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}

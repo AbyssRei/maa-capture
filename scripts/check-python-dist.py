@@ -6,6 +6,8 @@ import sys
 import tarfile
 import tomllib
 import zipfile
+import hashlib
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
 project = tomllib.loads((ROOT / "bindings/python/pyproject.toml").read_text(encoding="utf-8"))["project"]
@@ -34,6 +36,10 @@ with zipfile.ZipFile(wheel) as archive:
     if require_native:
         for library in native:
             assert archive.getinfo("maa_capture/_native/" + library).file_size > 0, library
+            platform = library.split("/")[0]
+            manifest = json.loads(archive.read(f"maa_capture/_native/{platform}/build-manifest.json"))
+            assert manifest["abi"] == 2 and manifest["version"] == version
+            assert hashlib.sha256(archive.read("maa_capture/_native/" + library)).hexdigest() == manifest["native_sha256"]
 
 sdist = dist / f"maa_capture-{version}.tar.gz"
 with tarfile.open(sdist) as archive:
@@ -45,5 +51,9 @@ with tarfile.open(sdist) as archive:
     if require_native:
         for library in native:
             assert archive.getmember(prefix + "src/maa_capture/_native/" + library).size > 0, library
+            platform = library.split("/")[0]
+            manifest = json.loads(archive.extractfile(prefix + f"src/maa_capture/_native/{platform}/build-manifest.json").read())
+            assert manifest["abi"] == 2 and manifest["version"] == version
+            assert hashlib.sha256(archive.extractfile(prefix + "src/maa_capture/_native/" + library).read()).hexdigest() == manifest["native_sha256"]
 
 print(f"Python {version}: wheel and sdist metadata and description repository links OK")
