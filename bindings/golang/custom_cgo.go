@@ -86,7 +86,7 @@ func (m *Manager) RegisterCustomUnit(key string, capture func() *CaptureFrame, i
 	state := &callbackState{capture: capture, inactive: inactive}
 	token := cgo.NewHandle(state)
 	cb := C.mws_callbacks()
-	ok := m.call("MaaWSManagerRegisterCustomUnit", m.require(), uintptr(unsafe.Pointer(&bytes[0])), uintptr(m.scope), 0, uintptr(unsafe.Pointer(&cb)), uintptr(token))
+	ok := m.call("MaaWSManagerRegisterCustomUnit", m.require(), uintptr(unsafe.Pointer(&bytes[0])), uintptr(m.scope), 0, uintptr(unsafe.Pointer(&cb)), uintptr(token)) & 0xff
 	runtime.KeepAlive(bytes)
 	if ok == 0 {
 		token.Delete()

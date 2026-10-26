@@ -31,7 +31,18 @@ public sealed class CaptureTarget {
     public static CaptureTarget Window(ulong id,ulong processId=0) { if(id==0)throw new ArgumentException("Window ID is required"); var t=Abi.New<MaaWSCaptureTarget>(); t.type=2;t.platform=1;t.window_id=id;t.process_id=processId;return new(t); }
     public static CaptureTarget Custom(string key,uint scope=8) { var t=Abi.New<MaaWSCaptureTarget>();t.type=5;t.scope=scope;t.source_key=Abi.Text(key,512);return new(t); }
 }
-public sealed record CaptureFrame(byte[] Data,uint Width,uint Height,uint Channels,ulong Step,MaaWSFrameInfo Source);
+public sealed record CaptureFrame(byte[] Data,uint Width,uint Height,uint Channels,ulong Step,MaaWSFrameInfo Source) {
+    public MaaWSFrameSampleInfo Sample {get;init;}
+}
+[Flags] public enum CapturePolicyFlags:ulong {FramePoolCache=1,DxgiCache=2,StrictBackground=4,FreshOnly=8,Diagnostics=16}
+public sealed record CapturePolicy(CapturePolicyFlags Flags=0,ulong MaxSampleAgeNs=0,ulong ConnectTimeoutNs=0,ulong CaptureTimeoutNs=0,ulong FirstFrameTimeoutNs=0);
+public sealed class Cancellation:IDisposable {
+    private IntPtr handle;private readonly object gate=new();
+    internal Cancellation(IntPtr value){handle=value;if(value==IntPtr.Zero)throw new InvalidOperationException("Cancellation handle creation failed");}
+    public bool Request(){lock(gate){if(handle==IntPtr.Zero)throw new ObjectDisposedException(nameof(Cancellation));return Native.MaaWSCancelRequest(handle)!=0;}}
+    public void Dispose(){lock(gate){if(handle!=IntPtr.Zero){Native.MaaWSCancelHandleDestroy(handle);handle=IntPtr.Zero;}}GC.SuppressFinalize(this);}
+    ~Cancellation(){Dispose();}
+}
 internal static class Native {
     const string Lib="maa-capture";
     internal static void VerifySymbols() {
@@ -42,6 +53,14 @@ internal static class Native {
         } finally {NativeLibrary.Free(library);}
     }
     [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern uint MaaWSGetAbiVersion();
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern ulong MaaWSGetApiFeatures();
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern IntPtr MaaWSManagerCreateAdvanced(ref MaaWSCaptureOptions o,ref MaaWSAdvancedCapturePolicy p,ref MaaWSError e);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern byte MaaWSGetMethodBehavior(ulong method,ref MaaWSMethodBehavior behavior,ref MaaWSError e);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern IntPtr MaaWSManagerGetCancellationHandle(IntPtr h);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern byte MaaWSCancelRequest(IntPtr h);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern void MaaWSCancelHandleDestroy(IntPtr h);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern IntPtr MaaWSManagerCreateWithPolicy(ref MaaWSCaptureOptions o,ref MaaWSCapturePolicy p,ref MaaWSError e);
+    [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern byte MaaWSFrameGetSampleInfo(IntPtr f,ref MaaWSFrameSampleInfo i);
     [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern IntPtr MaaWSManagerCreate(ref MaaWSCaptureOptions o,ref MaaWSError e);
     [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern void MaaWSManagerDestroy(IntPtr h);
     [DllImport(Lib,CallingConvention=CallingConvention.Cdecl)] internal static extern byte MaaWSManagerConnect(IntPtr h);
@@ -59,19 +78,37 @@ internal static class Native {
 public sealed class Manager:IDisposable {
     private IntPtr handle;
     private readonly CaptureTarget target;
+    private readonly ulong features;
     private readonly List<object> callbacks = new();
-    public Manager(CaptureTarget target,ulong methods=0) {
+    public Manager(CaptureTarget target,ulong methods=0,bool framepoolCache=false,CapturePolicy? policy=null) {
         if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture!=Architecture.X64) throw new PlatformNotSupportedException("C# binding supports Windows x64");
         try { if(Native.MaaWSGetAbiVersion()!=2)throw new InvalidOperationException("maa-capture binding requires ABI 2"); }
         catch(EntryPointNotFoundException e) {throw new InvalidOperationException("Native library lacks ABI 2 query",e);}
         Native.VerifySymbols();
+        features=Native.MaaWSGetApiFeatures();
         this.target=target;
         var options=Abi.New<MaaWSCaptureOptions>(); options.target=target.Value;options.methods=methods;
-        var error=Abi.New<MaaWSError>();handle=Native.MaaWSManagerCreate(ref options,ref error);
+        var error=Abi.New<MaaWSError>();
+        if(policy!=null) {
+            if((features&32)==0)throw new NotSupportedException("Native library does not support advanced capture policies");
+            var native=Abi.New<MaaWSAdvancedCapturePolicy>();native.flags=(ulong)policy.Flags|(framepoolCache?1UL:0UL);
+            native.max_sample_age_ns=policy.MaxSampleAgeNs;native.connect_timeout_ns=policy.ConnectTimeoutNs;native.capture_timeout_ns=policy.CaptureTimeoutNs;native.first_frame_timeout_ns=policy.FirstFrameTimeoutNs;
+            handle=Native.MaaWSManagerCreateAdvanced(ref options,ref native,ref error);
+        } else if(framepoolCache) {
+            if((features&16)==0)throw new NotSupportedException("Native library does not support FramePool caching");
+            var legacyPolicy=Abi.New<MaaWSCapturePolicy>();legacyPolicy.flags=1;
+            handle=Native.MaaWSManagerCreateWithPolicy(ref options,ref legacyPolicy,ref error);
+        } else handle=Native.MaaWSManagerCreate(ref options,ref error);
         if(handle==IntPtr.Zero)throw new InvalidOperationException(Abi.Text(error.message));
     }
     private IntPtr Handle => handle!=IntPtr.Zero?handle:throw new ObjectDisposedException(nameof(Manager));
     public bool Connect()=>Native.MaaWSManagerConnect(Handle)!=0;
+    public Cancellation CancellationHandle(){if((features&128)==0)throw new NotSupportedException("Native library does not support cancellation");return new(Native.MaaWSManagerGetCancellationHandle(Handle));}
+    public static MaaWSMethodBehavior MethodBehavior(ulong method){
+        if(Native.MaaWSGetAbiVersion()!=2||(Native.MaaWSGetApiFeatures()&64)==0)throw new NotSupportedException("Native library does not support method behavior queries");
+        var behavior=Abi.New<MaaWSMethodBehavior>();var error=Abi.New<MaaWSError>();
+        if(Native.MaaWSGetMethodBehavior(method,ref behavior,ref error)==0)throw new InvalidOperationException(Abi.Text(error.message));return behavior;
+    }
     public MaaWSError LastError() {var e=Abi.New<MaaWSError>();Native.MaaWSManagerGetLastError(Handle,ref e);return e;}
     public bool RegisterCustomUnit(string key,Func<CaptureFrame?> capture,Action? inactive=null) {
         GCHandle pin=default;
@@ -97,7 +134,9 @@ public sealed class Manager:IDisposable {
             var i=Abi.New<MaaWSImageView>();var source=Abi.New<MaaWSFrameInfo>();
             if(Native.MaaWSFrameGetImage(f,ref i)==0||Native.MaaWSFrameGetInfo(f,ref source)==0)throw new InvalidOperationException("Invalid frame");
             var bytes=new byte[checked((int)i.data_size)];Marshal.Copy(i.data,bytes,0,bytes.Length);
-            return new(bytes,i.width,i.height,i.channels,i.step,source);
+            var sample=Abi.New<MaaWSFrameSampleInfo>();
+            if((features&8)!=0&&Native.MaaWSFrameGetSampleInfo(f,ref sample)==0)throw new InvalidOperationException("Invalid sample metadata");
+            return new(bytes,i.width,i.height,i.channels,i.step,source){Sample=sample};
         } finally {Native.MaaWSFrameDestroy(f);}
     }
     public void Inactive()=>Native.MaaWSManagerInactive(Handle);

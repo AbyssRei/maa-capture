@@ -27,6 +27,35 @@ MonitorInfo = _value_type("MonitorInfo", F.MaaWSMonitorInfo)
 SourceInfo = _value_type("SourceInfo", F.MaaWSFrameInfo)
 MethodCapabilities = _value_type("MethodCapabilities", F.MaaWSMethodCapabilities)
 RuntimeInfo = _value_type("RuntimeInfo", F.MaaWSRuntimeInfo)
+FrameSampleInfo = _value_type("FrameSampleInfo", F.MaaWSFrameSampleInfo)
+MethodBehavior = _value_type("MethodBehavior", F.MaaWSMethodBehavior)
+
+@dataclass(frozen=True, slots=True)
+class CapturePolicy:
+    framepool_cache: bool = False
+    dxgi_cache: bool = False
+    strict_background: bool = False
+    fresh_only: bool = False
+    diagnostics: bool = False
+    max_sample_age_ns: int = 0
+    connect_timeout_ns: int = 0
+    capture_timeout_ns: int = 0
+    first_frame_timeout_ns: int = 0
+
+def advanced_policy_native(policy, framepool_cache=False):
+    if not isinstance(policy,CapturePolicy):
+        raise TypeError("policy must be CapturePolicy")
+    out = F.MaaWSAdvancedCapturePolicy()
+    out.struct_size = C.sizeof(out)
+    out.flags = int(framepool_cache)
+    for name,bit in (("framepool_cache",1),("dxgi_cache",2),("strict_background",4),("fresh_only",8),("diagnostics",16)):
+        value = getattr(policy,name)
+        if not isinstance(value,bool):
+            raise TypeError(f"{name} must be a bool")
+        if value: out.flags |= bit
+    for name in ("max_sample_age_ns","connect_timeout_ns","capture_timeout_ns","first_frame_timeout_ns"):
+        setattr(out,name,integer(getattr(policy,name)))
+    return out
 
 def from_native(value, public):
     data = {}
@@ -149,6 +178,7 @@ class Image:
 class CaptureFrame:
     image: Image
     source: SourceInfo
+    sample: FrameSampleInfo = field(default_factory=FrameSampleInfo)
 
 @dataclass(frozen=True, slots=True)
 class MonitorSnapshot:

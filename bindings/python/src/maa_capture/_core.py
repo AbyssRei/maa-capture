@@ -2,6 +2,7 @@
 from __future__ import annotations
 import ctypes as C
 import logging
+import threading
 from . import _ffi as F, _loader
 from ._types import *
 MaaWSBool = C.c_uint8
@@ -38,6 +39,23 @@ def setup(lib):
     for name,(result,args) in prototypes.items():
         func = getattr(lib,name)
         func.restype,func.argtypes = result,args
+    features = lib.MaaWSGetApiFeatures()
+    if features & 8:
+        lib.MaaWSFrameGetSampleInfo.restype = MaaWSBool
+        lib.MaaWSFrameGetSampleInfo.argtypes = [pointer,C.POINTER(F.MaaWSFrameSampleInfo)]
+    if features & 16:
+        lib.MaaWSManagerCreateWithPolicy.restype = pointer
+        lib.MaaWSManagerCreateWithPolicy.argtypes = [C.POINTER(F.MaaWSCaptureOptions),C.POINTER(F.MaaWSCapturePolicy),C.POINTER(F.MaaWSError)]
+    for bit,name,result,args in (
+        (32,"MaaWSManagerCreateAdvanced",pointer,[C.POINTER(F.MaaWSCaptureOptions),C.POINTER(F.MaaWSAdvancedCapturePolicy),C.POINTER(F.MaaWSError)]),
+        (64,"MaaWSGetMethodBehavior",MaaWSBool,[C.c_uint64,C.POINTER(F.MaaWSMethodBehavior),C.POINTER(F.MaaWSError)]),
+        (128,"MaaWSManagerGetCancellationHandle",pointer,[pointer]),
+        (128,"MaaWSCancelRequest",MaaWSBool,[pointer]),
+        (128,"MaaWSCancelHandleDestroy",None,[pointer]),
+    ):
+        if features & bit:
+            func = getattr(lib,name)
+            func.restype,func.argtypes = result,args
 
 def _new(kind):
     value = kind()
@@ -58,6 +76,15 @@ def method_capabilities(method):
     if not _loader.load().MaaWSGetMethodCapabilities(integer(method),C.byref(out),C.byref(e)):
         raise CaptureException(from_native(e,CaptureError))
     return from_native(out,MethodCapabilities)
+
+def method_behavior(method):
+    lib = _loader.load()
+    if not lib.MaaWSGetApiFeatures() & 64:
+        raise RuntimeError("Native library does not support method behavior queries")
+    out,e = _new(F.MaaWSMethodBehavior),_new(F.MaaWSError)
+    if not lib.MaaWSGetMethodBehavior(integer(method),C.byref(out),C.byref(e)):
+        raise CaptureException(from_native(e,CaptureError))
+    return from_native(out,MethodBehavior)
 
 def monitors():
     lib = _loader.load()
@@ -110,6 +137,25 @@ class ScreencapCallbacks:
         self._inactive = _VOID(lambda _: safe(lambda: inactive() if inactive else None,None))
         self._native = _Callbacks(C.sizeof(_Callbacks),0,self._connect,self._capture,self._release,self._inactive)
 
+class Cancellation:
+    """Independent signal. request() may run beside a serial Manager call."""
+    def __init__(self,lib,handle):
+        self._lib,self._handle,self._lock = lib,handle,threading.Lock()
+    def request(self):
+        with self._lock:
+            if not self._handle: raise RuntimeError("Cancellation handle is closed")
+            return bool(self._lib.MaaWSCancelRequest(self._handle))
+    def close(self):
+        with self._lock:
+            if self._handle:
+                self._lib.MaaWSCancelHandleDestroy(self._handle)
+                self._handle = None
+    def __enter__(self): return self
+    def __exit__(self,*args): self.close()
+    def __del__(self):
+        try: self.close()
+        except Exception: pass
+
 class Manager:
     METHOD_NONE = 0
     METHOD_AUTO = 0
@@ -122,15 +168,29 @@ class Manager:
     METHOD_PIPEWIRE = 64
     METHOD_WLR = 128
     METHOD_SCREENCAPTUREKIT = 256
-    def __init__(self, *, target: CaptureTarget, methods: int = 0):
+    def __init__(self, *, target: CaptureTarget, methods: int = 0, framepool_cache: bool = False, policy: CapturePolicy | None = None):
         self._handle = None
         self._callbacks = []
         options = _new(F.MaaWSCaptureOptions)
         options.target = target_native(target)
         options.methods = integer(methods)
         self._lib = _loader.load()
+        if not isinstance(framepool_cache,bool):
+            raise TypeError("framepool_cache must be a bool")
         e = _new(F.MaaWSError)
-        self._handle = self._lib.MaaWSManagerCreate(C.byref(options),C.byref(e))
+        if policy is not None:
+            native_policy = advanced_policy_native(policy,framepool_cache)
+            if not self._lib.MaaWSGetApiFeatures() & 32:
+                raise RuntimeError("Native library does not support advanced capture policies")
+            self._handle = self._lib.MaaWSManagerCreateAdvanced(C.byref(options),C.byref(native_policy),C.byref(e))
+        elif framepool_cache:
+            if not self._lib.MaaWSGetApiFeatures() & 16:
+                raise RuntimeError("Native library does not support FramePool caching")
+            policy = _new(F.MaaWSCapturePolicy)
+            policy.flags = 1
+            self._handle = self._lib.MaaWSManagerCreateWithPolicy(C.byref(options),C.byref(policy),C.byref(e))
+        else:
+            self._handle = self._lib.MaaWSManagerCreate(C.byref(options),C.byref(e))
         if not self._handle:
             raise CaptureException(from_native(e,CaptureError))
         self.target = target
@@ -149,6 +209,12 @@ class Manager:
         return bool(ok)
     def connect(self):
         return bool(self._lib.MaaWSManagerConnect(self._require_handle()))
+    def cancellation_handle(self):
+        if not self._lib.MaaWSGetApiFeatures() & 128:
+            raise RuntimeError("Native library does not support cancellation")
+        handle = self._lib.MaaWSManagerGetCancellationHandle(self._require_handle())
+        if not handle: raise RuntimeError("Cancellation handle creation failed")
+        return Cancellation(self._lib,handle)
     def last_error(self):
         e = _new(F.MaaWSError)
         if not self._lib.MaaWSManagerGetLastError(self._require_handle(),C.byref(e)):
@@ -162,7 +228,11 @@ class Manager:
             image,info = _new(F.MaaWSImageView),_new(F.MaaWSFrameInfo)
             if not self._lib.MaaWSFrameGetImage(frame,C.byref(image)) or not self._lib.MaaWSFrameGetInfo(frame,C.byref(info)):
                 raise RuntimeError("Invalid native frame")
-            return CaptureFrame(Image(image.width,image.height,image.channels,image.step,C.string_at(image.data,image.data_size)),from_native(info,SourceInfo))
+            sample = _new(F.MaaWSFrameSampleInfo)
+            if self._lib.MaaWSGetApiFeatures() & 8:
+                if not self._lib.MaaWSFrameGetSampleInfo(frame,C.byref(sample)):
+                    raise RuntimeError("Invalid native sample metadata")
+            return CaptureFrame(Image(image.width,image.height,image.channels,image.step,C.string_at(image.data,image.data_size)),from_native(info,SourceInfo),from_native(sample,FrameSampleInfo))
         finally:
             self._lib.MaaWSFrameDestroy(frame)
     def selected_unit_name(self):

@@ -16,6 +16,12 @@
 可从 C/Python 获取 monitor key 后传给这些绑定的显式 monitor 目标。
 结构声明由 `scripts/generate-ffi.py` 从 C 头生成，修改契约后重新生成并检查。
 
+未发布扩展：六语言绑定支持显式 FramePool 缓存策略及独立帧采样信息，先探测功能位再解析新符号。
+旧 ABI 2 库的默认路径仍可用，采样信息为未知；请求缓存明确失败。开关与标记语义见
+[集成契约](../docs/INTEGRATION.md)。C++ SDK 的类布局变化要求成套重编译，旧 C 结构布局不变。
+六语言还提供独立高级策略、行为查询与取消句柄；旧库缺少这些功能时明确拒绝。
+取消句柄独立于 Manager，须按对应绑定的 close/Dispose/AutoCloseable/Drop 契约释放。
+
 最小运行样例：Node.js `test.js`、C# `test/`、Java `Sample.java`、
 Go `test/`、Rust `examples/demo.rs`，全部测试自定义来源的创建/取帧/关闭。
 先构建原生库并把 DLL 目录加入 PATH。Go/Node 支持 `MAA_WS_LIB`；

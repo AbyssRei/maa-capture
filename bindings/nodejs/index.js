@@ -16,6 +16,7 @@ function load() {
         const abi = lib.func('uint32 MaaWSGetAbiVersion(void)')();
         if (abi !== 2) throw new Error('Expected ABI 2, got '+abi);
         api = {
+            features:lib.func('uint64 MaaWSGetApiFeatures(void)')(),
             create:lib.func('void *MaaWSManagerCreate(MaaWSCaptureOptions *, _Inout_ MaaWSError *)'),
             destroy:lib.func('void MaaWSManagerDestroy(void *)'),
             connect:lib.func('uint8 MaaWSManagerConnect(void *)'),
@@ -27,6 +28,14 @@ function load() {
             inactive:lib.func('void MaaWSManagerInactive(void *)'),
             register:lib.func('uint8 MaaWSManagerRegisterCustomUnit(void *, const char *, uint32, uint32, MwsCallbacks *, void *)'),
         };
+        if(BigInt(api.features)&8n)api.sample=lib.func('uint8 MaaWSFrameGetSampleInfo(void *, _Inout_ MaaWSFrameSampleInfo *)');
+        if(BigInt(api.features)&16n)api.createPolicy=lib.func('void *MaaWSManagerCreateWithPolicy(MaaWSCaptureOptions *, MaaWSCapturePolicy *, _Inout_ MaaWSError *)');
+        if(BigInt(api.features)&32n)api.createAdvanced=lib.func('void *MaaWSManagerCreateAdvanced(MaaWSCaptureOptions *, MaaWSAdvancedCapturePolicy *, _Inout_ MaaWSError *)');
+        if(BigInt(api.features)&64n)api.behavior=lib.func('uint8 MaaWSGetMethodBehavior(uint64, _Inout_ MaaWSMethodBehavior *, _Inout_ MaaWSError *)');
+        if(BigInt(api.features)&128n){
+            api.cancelHandle=lib.func('void *MaaWSManagerGetCancellationHandle(void *)');
+            api.cancel=lib.func('uint8 MaaWSCancelRequest(void *)');api.cancelFree=lib.func('void MaaWSCancelHandleDestroy(void *)');
+        }
     } catch (e) {api=null;throw new Error('maa-capture package='+require('./package.json').version+' native=unknown path='+requested+': '+e.message);}
     return api;
 }
@@ -42,7 +51,7 @@ function providerFrame(sourceKey,data,width,height,channels=4,step=width*channel
     return {image:{width,height,channels,step,data:Buffer.from(data)},source};
 }
 class Manager {
-    constructor({target,methods=0n}) {
+    constructor({target,methods=0n,framepoolCache=false,policy=null}) {
         if(!target||![1,2,5].includes(target.type))throw new TypeError('Explicit target is required');
         const allowed=target.type===1?['type','source_key']:target.type===2?['type','platform','window_id','process_id']:['type','scope','source_key'];
         if(Object.keys(target).some(k=>!allowed.includes(k)))throw new TypeError('Conflicting or unknown target fields');
@@ -50,11 +59,26 @@ class Manager {
         const normalized=target.type===1?monitorTarget(target.source_key):target.type===2?windowTarget(target.window_id,target.process_id??0n):customTarget(target.source_key,target.scope??8);
         this.api=load();this.callbacks=[];this.target=normalized;
         const o=init(T.MaaWSCaptureOptions);o.target=Object.assign(init(T.MaaWSCaptureTarget),normalized);o.methods=uint(methods);
-        const e=init(T.MaaWSError);this.handle=this.api.create(o,e);
+        if(typeof framepoolCache!=='boolean')throw new TypeError('framepoolCache must be boolean');
+        const e=init(T.MaaWSError);
+        if(policy!==null){
+            if(!this.api.createAdvanced)throw new Error('Native library does not support advanced capture policies');
+            const native=init(T.MaaWSAdvancedCapturePolicy);native.flags=framepoolCache?1n:0n;
+            const flags={framepoolCache:1n,dxgiCache:2n,strictBackground:4n,freshOnly:8n,diagnostics:16n};
+            const durations={maxSampleAgeNs:'max_sample_age_ns',connectTimeoutNs:'connect_timeout_ns',captureTimeoutNs:'capture_timeout_ns',firstFrameTimeoutNs:'first_frame_timeout_ns'};
+            if(typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(k=>!Object.hasOwn(flags,k)&&!Object.hasOwn(durations,k)))throw new TypeError('Unknown capture policy field');
+            for(const [name,bit] of Object.entries(flags)){const value=policy[name]??false;if(typeof value!=='boolean')throw new TypeError(name+' must be boolean');if(value)native.flags=BigInt(native.flags)|bit;}
+            for(const [name,field] of Object.entries(durations))native[field]=uint(policy[name]??0n);
+            this.handle=this.api.createAdvanced(o,native,e);
+        }else if(framepoolCache){
+            if(!this.api.createPolicy)throw new Error('Native library does not support FramePool caching');
+            const policy=init(T.MaaWSCapturePolicy);policy.flags=1n;this.handle=this.api.createPolicy(o,policy,e);
+        }else this.handle=this.api.create(o,e);
         if(!this.handle)throw new Error(e.message);
     }
     require(){if(!this.handle)throw new Error('Manager is closed');return this.handle;}
     connect(){return !!this.api.connect(this.require());}
+    cancellationHandle(){if(!this.api.cancelHandle)throw new Error('Native library does not support cancellation');const h=this.api.cancelHandle(this.require());if(!h)throw new Error('Cancellation handle creation failed');return new Cancellation(this.api,h);}
     lastError(){const e=init(T.MaaWSError);this.api.error(this.require(),e);return Object.freeze(e);}
     registerCustomUnit(sourceKey,{screencap,inactive}) {
         let pixels=null;
@@ -83,10 +107,18 @@ class Manager {
             const image=init(T.MaaWSImageView),source=init(T.MaaWSFrameInfo);
             if(!this.api.image(out[0],image)||!this.api.info(out[0],source))throw new Error('Invalid frame');
             const data=Buffer.from(koffi.decode(image.data,'uint8',Number(image.data_size)));
-            return Object.freeze({image:Object.freeze({width:image.width,height:image.height,channels:image.channels,step:image.step,data}),source:Object.freeze(source)});
+            const sample=init(T.MaaWSFrameSampleInfo);
+            if(this.api.sample&&!this.api.sample(out[0],sample))throw new Error('Invalid sample metadata');
+            return Object.freeze({image:Object.freeze({width:image.width,height:image.height,channels:image.channels,step:image.step,data}),source:Object.freeze(source),sample:Object.freeze(sample)});
         }finally{this.api.free(out[0]);}
     }
     inactive(){this.api.inactive(this.require());}
     close(){if(this.handle){this.api.destroy(this.handle);this.handle=null;for(const group of this.callbacks)for(const p of group)koffi.unregister(p);this.callbacks=[];}}
 }
-module.exports={Manager,monitorTarget,windowTarget,customTarget,providerFrame};
+class Cancellation {
+    constructor(api,handle){this.api=api;this.handle=handle;}
+    request(){if(!this.handle)throw new Error('Cancellation handle is closed');return !!this.api.cancel(this.handle);}
+    close(){if(this.handle){this.api.cancelFree(this.handle);this.handle=null;}}
+}
+function methodBehavior(method){const api=load();if(!api.behavior)throw new Error('Native library does not support method behavior queries');const out=init(T.MaaWSMethodBehavior),error=init(T.MaaWSError);if(!api.behavior(uint(method),out,error))throw new Error(error.message);return Object.freeze(out);}
+module.exports={Manager,Cancellation,methodBehavior,monitorTarget,windowTarget,customTarget,providerFrame};

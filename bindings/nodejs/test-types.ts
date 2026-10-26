@@ -4,3 +4,5 @@ manager.registerCustomUnit('test',{screencap:():CaptureFrame => providerFrame('t
 const frame:CaptureFrame|null=manager.screencap();
 if(frame)console.log(frame.image.width,frame.source.source_key);
 manager.close();
+const advanced=new Manager({target:customTarget('test'),policy:{connectTimeoutNs:1000000000n,diagnostics:true}});
+const cancellation=advanced.cancellationHandle();cancellation.request();advanced.close();cancellation.close();

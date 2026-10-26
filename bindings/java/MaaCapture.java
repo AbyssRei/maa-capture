@@ -7,6 +7,14 @@ import java.util.function.Supplier;
 public final class MaaCapture extends NativeTypes {
     public interface Api extends Library {
         int MaaWSGetAbiVersion();
+        long MaaWSGetApiFeatures();
+        Pointer MaaWSManagerCreateAdvanced(MaaWSCaptureOptions o,MaaWSAdvancedCapturePolicy p,MaaWSError e);
+        byte MaaWSGetMethodBehavior(long method,MaaWSMethodBehavior behavior,MaaWSError e);
+        Pointer MaaWSManagerGetCancellationHandle(Pointer manager);
+        byte MaaWSCancelRequest(Pointer cancellation);
+        void MaaWSCancelHandleDestroy(Pointer cancellation);
+        Pointer MaaWSManagerCreateWithPolicy(MaaWSCaptureOptions o,MaaWSCapturePolicy p,MaaWSError e);
+        byte MaaWSFrameGetSampleInfo(Pointer f,MaaWSFrameSampleInfo i);
         Pointer MaaWSManagerCreate(MaaWSCaptureOptions o,MaaWSError e);
         void MaaWSManagerDestroy(Pointer h);
         byte MaaWSManagerConnect(Pointer h);
@@ -37,7 +45,25 @@ public final class MaaCapture extends NativeTypes {
     public static MaaWSCaptureTarget customTarget(String key,int scope){var t=sized(new MaaWSCaptureTarget());t.type=5;t.scope=scope;t.source_key=text(key,512);return t;}
     public static MaaWSCaptureTarget monitorTarget(String key){var t=sized(new MaaWSCaptureTarget());t.type=1;t.source_key=text(key,512);return t;}
     public static MaaWSCaptureTarget windowTarget(long id){if(id<=0)throw new IllegalArgumentException("Positive window ID required");var t=sized(new MaaWSCaptureTarget());t.type=2;t.platform=1;t.window_id=id;return t;}
-    public record CaptureFrame(byte[] data,int width,int height,int channels,long step,MaaWSFrameInfo source){}
+    public record CaptureFrame(byte[] data,int width,int height,int channels,long step,MaaWSFrameInfo source,MaaWSFrameSampleInfo sample){
+        public CaptureFrame(byte[] data,int width,int height,int channels,long step,MaaWSFrameInfo source){this(data,width,height,channels,step,source,sized(new MaaWSFrameSampleInfo()));}
+    }
+    public record CapturePolicy(long flags,long maxSampleAgeNs,long connectTimeoutNs,long captureTimeoutNs,long firstFrameTimeoutNs){
+        public CapturePolicy(long flags){this(flags,0,0,0,0);}
+        public CapturePolicy{if(flags<0||maxSampleAgeNs<0||connectTimeoutNs<0||captureTimeoutNs<0||firstFrameTimeoutNs<0)throw new IllegalArgumentException("Policy values must be nonnegative");}
+    }
+    public static final class Cancellation implements AutoCloseable {
+        private final Api api;private Pointer handle;
+        private Cancellation(Api api,Pointer handle){this.api=api;this.handle=handle;if(handle==null)throw new IllegalStateException("Cancellation handle creation failed");}
+        public synchronized boolean request(){if(handle==null)throw new IllegalStateException("Cancellation handle is closed");return api.MaaWSCancelRequest(handle)!=0;}
+        public synchronized void close(){if(handle!=null){api.MaaWSCancelHandleDestroy(handle);handle=null;}}
+    }
+    public static MaaWSMethodBehavior methodBehavior(long method){
+        var api=Native.load("maa-capture",Api.class);
+        if(api.MaaWSGetAbiVersion()!=2||(api.MaaWSGetApiFeatures()&64)==0)throw new UnsupportedOperationException("Native library does not support method behavior queries");
+        var behavior=sized(new MaaWSMethodBehavior());var error=sized(new MaaWSError());
+        if(api.MaaWSGetMethodBehavior(method,behavior,error)==0)throw new IllegalArgumentException(text(error.message));return behavior;
+    }
     public static CaptureFrame providerFrame(String key,byte[] data,int width,int height,int channels,long step,int scope){
         if(width<=0||height<=0||step<0)throw new IllegalArgumentException("Invalid image dimensions");
         var source=sized(new MaaWSFrameInfo());source.target_type=5;source.scope=scope;source.source_key=text(key,512);
@@ -47,20 +73,38 @@ public final class MaaCapture extends NativeTypes {
         private final Api api;
         private Pointer handle;
         private final int scope;
+        private final long features;
         private final List<Callbacks> callbacks=new ArrayList<>();
         public Manager(MaaWSCaptureTarget target,long methods) {
+            this(target,methods,false);
+        }
+        public Manager(MaaWSCaptureTarget target,long methods,boolean framepoolCache) {
+            this(target,methods,framepoolCache,null);
+        }
+        public Manager(MaaWSCaptureTarget target,long methods,boolean framepoolCache,CapturePolicy policy) {
             if(!Platform.isWindows()||!Platform.ARCH.equals("x86-64"))throw new UnsupportedOperationException("Java binding supports Windows x64");
             api=Native.load("maa-capture",Api.class,Map.of(Library.OPTION_STRING_ENCODING,"UTF-8"));
             if(api.MaaWSGetAbiVersion()!=2)throw new IllegalStateException("maa-capture binding requires ABI 2");
+            features=api.MaaWSGetApiFeatures();
             var library=NativeLibrary.getInstance("maa-capture");
             for(String symbol:new String[]{"MaaWSManagerCreate","MaaWSManagerDestroy","MaaWSManagerConnect","MaaWSManagerScreencap","MaaWSFrameGetImage","MaaWSFrameGetInfo","MaaWSFrameDestroy","MaaWSManagerRegisterCustomUnit","MaaWSManagerGetLastError","MaaWSManagerInactive"})
                 library.getFunction(symbol);
             var o=sized(new MaaWSCaptureOptions());o.target=target;o.methods=methods;scope=target.scope;
-            var e=sized(new MaaWSError());handle=api.MaaWSManagerCreate(o,e);
+            var e=sized(new MaaWSError());
+            if(policy!=null){
+                if((features&32)==0)throw new UnsupportedOperationException("Native library does not support advanced capture policies");
+                var nativePolicy=sized(new MaaWSAdvancedCapturePolicy());nativePolicy.flags=policy.flags()|(framepoolCache?1:0);
+                nativePolicy.max_sample_age_ns=policy.maxSampleAgeNs();nativePolicy.connect_timeout_ns=policy.connectTimeoutNs();nativePolicy.capture_timeout_ns=policy.captureTimeoutNs();nativePolicy.first_frame_timeout_ns=policy.firstFrameTimeoutNs();
+                handle=api.MaaWSManagerCreateAdvanced(o,nativePolicy,e);
+            }else if(framepoolCache){
+                if((features&16)==0)throw new UnsupportedOperationException("Native library does not support FramePool caching");
+                var legacyPolicy=sized(new MaaWSCapturePolicy());legacyPolicy.flags=1;handle=api.MaaWSManagerCreateWithPolicy(o,legacyPolicy,e);
+            }else handle=api.MaaWSManagerCreate(o,e);
             if(handle==null)throw new IllegalArgumentException(text(e.message));
         }
         private Pointer require(){if(handle==null)throw new IllegalStateException("Manager is closed");return handle;}
         public boolean connect(){return api.MaaWSManagerConnect(require())!=0;}
+        public Cancellation cancellationHandle(){if((features&128)==0)throw new UnsupportedOperationException("Native library does not support cancellation");return new Cancellation(api,api.MaaWSManagerGetCancellationHandle(require()));}
         public MaaWSError lastError(){var e=sized(new MaaWSError());api.MaaWSManagerGetLastError(require(),e);return e;}
         public boolean registerCustomUnit(String key,Supplier<CaptureFrame> provider,Runnable stop){
             var cb=new Callbacks();cb.struct_size=cb.size();final Memory[] pixels={null};
@@ -83,7 +127,9 @@ public final class MaaCapture extends NativeTypes {
             try {
                 var i=sized(new MaaWSImageView());var source=sized(new MaaWSFrameInfo());
                 if(api.MaaWSFrameGetImage(f,i)==0||api.MaaWSFrameGetInfo(f,source)==0)throw new IllegalStateException("Invalid native frame");
-                return new CaptureFrame(i.data.getByteArray(0,Math.toIntExact(i.data_size)),i.width,i.height,i.channels,i.step,source);
+                var sample=sized(new MaaWSFrameSampleInfo());
+                if((features&8)!=0&&api.MaaWSFrameGetSampleInfo(f,sample)==0)throw new IllegalStateException("Invalid sample metadata");
+                return new CaptureFrame(i.data.getByteArray(0,Math.toIntExact(i.data_size)),i.width,i.height,i.channels,i.step,source,sample);
             }finally{api.MaaWSFrameDestroy(f);}
         }
         public void inactive(){api.MaaWSManagerInactive(require());}
