@@ -1,187 +1,92 @@
 package maa.capture;
-
-import com.sun.jna.Callback;
-import com.sun.jna.Library;
-import com.sun.jna.Native;
-import com.sun.jna.Pointer;
-import com.sun.jna.Structure;
-
-import java.util.ArrayList;
-import java.util.List;
-
-/**
- * maa-capture —— Java 绑定（JNA，无需 JNI 编译）
- *
- * 对应 MaaFramework 的 maa-framework-java 角色；封装两个外部扩展接口：
- *   1. 外部回调实现截图（对应 MaaCustomControllerCallbacks::screencap）
- *   2. Manager：内置 6 种 Win32 截图方式测速选择 + 外部单元注册
- *
- * 依赖：net.java.dev.jna:jna，由 fetch-jna.ps1 从 Maven Central 解析最新稳定版。
- * 加载：把 maa-capture.dll放入 JVM 的
- *       jna.library.path / PATH，或 java -Djna.library.path=build/Release。
- *
- * 用法：
- *   try (ScreencapManager mgr = new ScreencapManager(Pointer.NULL, Methods.NONE)) {
- *       mgr.registerCustomUnit("java-gradient", ctx, new Callbacks() {
- *           @Override public byte screencap(Pointer arg, ImageBuffer out) { ... return 1; }
- *       });
- *       mgr.connect();
- *       ImageBuffer img = mgr.screencap();
- *       byte[] bgr = img.copyBytes();
- *   }
- */
-public final class MaaCapture
-{
-    /** 截图方式位掩码（与 C 头文件常数一致） */
-    public static final class Methods
-    {
-        public static final long NONE = 0L;
-        public static final long GDI = 1L << 0;
-        public static final long FRAMEPOOL = 1L << 1;
-        public static final long DXGI_DESKTOP_DUP = 1L << 2;
-        public static final long DXGI_DESKTOP_DUP_WINDOW = 1L << 3;
-        public static final long PRINTWINDOW = 1L << 4;
-        public static final long SCREENDC = 1L << 5;
-        public static final long ALL = -1L;
-        public static final long FOREGROUND = DXGI_DESKTOP_DUP_WINDOW | SCREENDC;
-        public static final long BACKGROUND = FRAMEPOOL | PRINTWINDOW;
+import com.sun.jna.*;
+import com.sun.jna.ptr.PointerByReference;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.function.Supplier;
+public final class MaaCapture extends NativeTypes {
+    public interface Api extends Library {
+        int MaaWSGetAbiVersion();
+        Pointer MaaWSManagerCreate(MaaWSCaptureOptions o,MaaWSError e);
+        void MaaWSManagerDestroy(Pointer h);
+        byte MaaWSManagerConnect(Pointer h);
+        byte MaaWSManagerScreencap(Pointer h,PointerByReference f);
+        byte MaaWSManagerGetLastError(Pointer h,MaaWSError e);
+        byte MaaWSFrameGetImage(Pointer f,MaaWSImageView i);
+        byte MaaWSFrameGetInfo(Pointer f,MaaWSFrameInfo i);
+        void MaaWSFrameDestroy(Pointer f);
+        void MaaWSManagerInactive(Pointer h);
+        byte MaaWSManagerRegisterCustomUnit(Pointer h,String key,int scope,int valid,Callbacks cb,Pointer ctx);
     }
-
-    // ---- 原生接口（C decl 约定） ----
-
-    public interface NativeLib extends Library
-    {
-        NativeLib INSTANCE = Native.load("maa-capture", NativeLib.class);
-
-        Pointer MaaWSManagerCreate(Pointer hwnd, long methods);
-        void MaaWSManagerDestroy(Pointer handle);
-        byte MaaWSManagerRegisterCustomUnit(Pointer handle, String name, Pointer callbacks, Pointer transArg);
-        byte MaaWSManagerConnect(Pointer handle);
-        byte MaaWSManagerScreencap(Pointer handle, ImageBuffer outBuffer);
-        Pointer MaaWSManagerSelectedUnitName(Pointer handle);
-        void MaaWSManagerInactive(Pointer handle);
-
-        Pointer MaaWSCustomScreencapCreate(Pointer callbacks, Pointer transArg);
-        void MaaWSCustomScreencapDestroy(Pointer handle);
-        byte MaaWSCustomScreencapScreencap(Pointer handle, ImageBuffer outBuffer);
+    public interface CaptureCallback extends Callback {byte invoke(Pointer ctx,Pointer frame,Pointer error);}
+    public interface VoidCallback extends Callback {void invoke(Pointer ctx);}
+    @Structure.FieldOrder({"struct_size","reserved","connect","screencap","release_frame","inactive"})
+    public static class Callbacks extends Structure {
+        public int struct_size,reserved;public Pointer connect;
+        public CaptureCallback screencap;public VoidCallback release_frame,inactive;
     }
-
-    /** 输出图像缓冲（MaaWSImageBuffer） */
-    public static class ImageBuffer extends Structure
-    {
-        public Pointer data; // 像素（BGR，归一化输出）
-        public int width;
-        public int height;
-        public int channels;
-        public int step;
-
-        public ImageBuffer()
-        {
-        }
-
-        @Override
-        protected List<String> getFieldOrder()
-        {
-            return List.of("data", "width", "height", "channels", "step");
-        }
-
-        /** 拷贝像素为托管 byte[]（行主序） */
-        public byte[] copyBytes()
-        {
-            if (data == null || width <= 0 || height <= 0) return new byte[0];
-            int row = step > 0 ? step : width * channels;
-            byte[] out = new byte[row * height];
-            data.read(0, out, 0, out.length);
-            return out;
-        }
+    public static <T extends Structure> T sized(T s) {
+        try{s.getClass().getField("struct_size").setInt(s,s.size());return s;}catch(ReflectiveOperationException e){throw new IllegalStateException(e);}
     }
-
-    // ---- 外部截图回调（对应 MaaCustomControllerCallbacks.screencap） ----
-
-    /** connect/connected/inactive 回调 */
-    public interface BoolCallback extends Callback
-    {
-        byte invoke(Pointer transArg);
+    public static byte[] text(String s,int capacity) {
+        if(s.indexOf(0)>=0)throw new IllegalArgumentException("NUL in UTF-8 string");
+        byte[] bytes=s.getBytes(StandardCharsets.UTF_8);if(bytes.length>=capacity)throw new IllegalArgumentException("UTF-8 string exceeds capacity");
+        return Arrays.copyOf(bytes,capacity);
     }
-
-    /** 截图回调：把图像写入 out（BGRA 或 BGR），成功返回 1 */
-    public interface ScreencapCallback extends Callback
-    {
-        byte invoke(Pointer transArg, ImageBuffer out);
+    public static String text(byte[] bytes){int n=0;while(n<bytes.length&&bytes[n]!=0)++n;return new String(bytes,0,n,StandardCharsets.UTF_8);}
+    public static MaaWSCaptureTarget customTarget(String key,int scope){var t=sized(new MaaWSCaptureTarget());t.type=5;t.scope=scope;t.source_key=text(key,512);return t;}
+    public static MaaWSCaptureTarget monitorTarget(String key){var t=sized(new MaaWSCaptureTarget());t.type=1;t.source_key=text(key,512);return t;}
+    public static MaaWSCaptureTarget windowTarget(long id){if(id<=0)throw new IllegalArgumentException("Positive window ID required");var t=sized(new MaaWSCaptureTarget());t.type=2;t.platform=1;t.window_id=id;return t;}
+    public record CaptureFrame(byte[] data,int width,int height,int channels,long step,MaaWSFrameInfo source){}
+    public static CaptureFrame providerFrame(String key,byte[] data,int width,int height,int channels,long step,int scope){
+        if(width<=0||height<=0||step<0)throw new IllegalArgumentException("Invalid image dimensions");
+        var source=sized(new MaaWSFrameInfo());source.target_type=5;source.scope=scope;source.source_key=text(key,512);
+        return new CaptureFrame(data.clone(),width,height,channels,step,source);
     }
-
-    /** 外部回调集合（MaaWSCustomScreencapCallbacks） */
-    public static class Callbacks extends Structure
-    {
-        public BoolCallback connect;
-        public BoolCallback connected;
-        public ScreencapCallback screencap;
-        public BoolCallback inactive;
-
-        @Override
-        protected List<String> getFieldOrder()
-        {
-            return List.of("connect", "connected", "screencap", "inactive");
+    public static final class Manager implements AutoCloseable {
+        private final Api api;
+        private Pointer handle;
+        private final int scope;
+        private final List<Callbacks> callbacks=new ArrayList<>();
+        public Manager(MaaWSCaptureTarget target,long methods) {
+            if(!Platform.isWindows()||!Platform.ARCH.equals("x86-64"))throw new UnsupportedOperationException("Java binding supports Windows x64");
+            api=Native.load("maa-capture",Api.class,Map.of(Library.OPTION_STRING_ENCODING,"UTF-8"));
+            if(api.MaaWSGetAbiVersion()!=2)throw new IllegalStateException("maa-capture binding requires ABI 2");
+            var library=NativeLibrary.getInstance("maa-capture");
+            for(String symbol:new String[]{"MaaWSManagerCreate","MaaWSManagerDestroy","MaaWSManagerConnect","MaaWSManagerScreencap","MaaWSFrameGetImage","MaaWSFrameGetInfo","MaaWSFrameDestroy","MaaWSManagerRegisterCustomUnit","MaaWSManagerGetLastError","MaaWSManagerInactive"})
+                library.getFunction(symbol);
+            var o=sized(new MaaWSCaptureOptions());o.target=target;o.methods=methods;scope=target.scope;
+            var e=sized(new MaaWSError());handle=api.MaaWSManagerCreate(o,e);
+            if(handle==null)throw new IllegalArgumentException(text(e.message));
         }
-    }
-
-    // ---- Manager ----
-
-    /** 截图管理器（MaaWSManager*） */
-    public static class ScreencapManager implements AutoCloseable
-    {
-        private final Pointer handle;
-        private final List<Callbacks> callbacksHold = new ArrayList<>(); // 防 GC
-
-        public ScreencapManager(Pointer hwnd, long methods)
-        {
-            handle = NativeLib.INSTANCE.MaaWSManagerCreate(hwnd, methods);
-            if (handle == null) throw new IllegalStateException("MaaWSManagerCreate failed");
+        private Pointer require(){if(handle==null)throw new IllegalStateException("Manager is closed");return handle;}
+        public boolean connect(){return api.MaaWSManagerConnect(require())!=0;}
+        public MaaWSError lastError(){var e=sized(new MaaWSError());api.MaaWSManagerGetLastError(require(),e);return e;}
+        public boolean registerCustomUnit(String key,Supplier<CaptureFrame> provider,Runnable stop){
+            var cb=new Callbacks();cb.struct_size=cb.size();final Memory[] pixels={null};
+            cb.screencap=(ctx,out,err)->{
+                try {
+                    var f=provider.get();if(f==null)return 0;
+                    pixels[0]=new Memory(f.data.length);pixels[0].write(0,f.data,0,f.data.length);
+                    var input=new MaaWSFrameInput(out);input.image=sized(new MaaWSImageView());input.image.width=f.width;input.image.height=f.height;
+                    input.image.channels=f.channels;input.image.step=f.step;input.image.data_size=f.data.length;input.image.data=pixels[0];input.info=f.source;
+                    input.write();return 1;
+                }catch(Throwable error){return 0;}
+            };
+            cb.release_frame=ctx->{if(pixels[0]!=null){pixels[0].close();pixels[0]=null;}};
+            cb.inactive=ctx->{try{if(stop!=null)stop.run();}catch(Throwable error){}};
+            boolean ok=api.MaaWSManagerRegisterCustomUnit(require(),key,scope,0,cb,null)!=0;if(ok)callbacks.add(cb);return ok;
         }
-
-        /** 注册外部自定义截图单元（回调必须实现 screencap） */
-        public boolean registerCustomUnit(String name, Callbacks callbacks)
-        {
-            if (callbacks.screencap == null)
-                throw new IllegalArgumentException("screencap callback is required");
-            callbacks.write(); // 确保回填到原生内存
-            callbacksHold.add(callbacks); // JNA 内部为 Callback 生成 trampoline，保持引用防 GC
-            byte ok = NativeLib.INSTANCE.MaaWSManagerRegisterCustomUnit(
-                handle, name, callbacks.getPointer(), Pointer.NULL);
-            return ok != 0;
+        public CaptureFrame screencap(){
+            var ref=new PointerByReference();if(api.MaaWSManagerScreencap(require(),ref)==0)return null;
+            Pointer f=ref.getValue();
+            try {
+                var i=sized(new MaaWSImageView());var source=sized(new MaaWSFrameInfo());
+                if(api.MaaWSFrameGetImage(f,i)==0||api.MaaWSFrameGetInfo(f,source)==0)throw new IllegalStateException("Invalid native frame");
+                return new CaptureFrame(i.data.getByteArray(0,Math.toIntExact(i.data_size)),i.width,i.height,i.channels,i.step,source);
+            }finally{api.MaaWSFrameDestroy(f);}
         }
-
-        public boolean connect()
-        {
-            return NativeLib.INSTANCE.MaaWSManagerConnect(handle) != 0;
-        }
-
-        /** 截图一次；成功返回图像信息（copyBytes 拷贝像素后使用） */
-        public ImageBuffer screencap()
-        {
-            ImageBuffer out = new ImageBuffer();
-            return NativeLib.INSTANCE.MaaWSManagerScreencap(handle, out) != 0 ? out : null;
-        }
-
-        public String selectedUnitName()
-        {
-            Pointer p = NativeLib.INSTANCE.MaaWSManagerSelectedUnitName(handle);
-            return p == null ? null : p.getString(0);
-        }
-
-        public void inactive()
-        {
-            NativeLib.INSTANCE.MaaWSManagerInactive(handle);
-        }
-
-        @Override
-        public void close()
-        {
-            NativeLib.INSTANCE.MaaWSManagerDestroy(handle);
-        }
-    }
-
-    private MaaCapture()
-    {
+        public void inactive(){api.MaaWSManagerInactive(require());}
+        public void close(){if(handle!=null){api.MaaWSManagerDestroy(handle);handle=null;callbacks.clear();}}
     }
 }

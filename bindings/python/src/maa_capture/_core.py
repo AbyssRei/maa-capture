@@ -1,342 +1,189 @@
-"""ctypes 绑定主体：ImageBuffer / ScreencapCallbacks / Manager。
-
-对应纯 C 头 ``MaaWSCustomScreencap.h`` 的 Manager C API（跨平台）：
-  - Windows：GDI / ScreenDC / PrintWindow / DXGI×2 / FramePool
-  - Linux  ：PipeWire / Wlr（目标经 set_pipewire_target / set_wlr_socket 配置）
-  - macOS  ：ScreenCaptureKit（hwnd 传 None 即 CGWindowID 0 = 整个主显示器）
-"""
-
+"""ABI 2 manager. Every returned frame owns copied bytes and frozen metadata."""
 from __future__ import annotations
-
-import ctypes
+import ctypes as C
 import logging
-from dataclasses import dataclass
-from typing import Callable, Optional
+from . import _ffi as F, _loader
+from ._types import *
+MaaWSBool = C.c_uint8
+_BOOL = C.CFUNCTYPE(MaaWSBool, C.c_void_p)
+_CAPTURE = C.CFUNCTYPE(MaaWSBool, C.c_void_p, C.POINTER(F.MaaWSFrameInput), C.POINTER(F.MaaWSError))
+_VOID = C.CFUNCTYPE(None, C.c_void_p)
+class _Callbacks(C.Structure):
+    _fields_ = [("struct_size", C.c_uint32), ("reserved", C.c_uint32), ("connect", _BOOL),
+                ("screencap", _CAPTURE), ("release_frame", _VOID), ("inactive", _VOID)]
 
-from . import _loader
+def setup(lib):
+    pointer = C.c_void_p
+    prototypes = {
+        "MaaWSGetRuntimeInfo": (MaaWSBool,[C.POINTER(F.MaaWSRuntimeInfo)]),
+        "MaaWSGetApiFeatures": (C.c_uint64,[]),
+        "MaaWSManagerGetAvailableMethods": (C.c_uint64,[]),
+        "MaaWSGetMethodCapabilities": (MaaWSBool,[C.c_uint64,C.POINTER(F.MaaWSMethodCapabilities),C.POINTER(F.MaaWSError)]),
+        "MaaWSMonitorSnapshotCreate": (pointer,[C.POINTER(F.MaaWSError)]),
+        "MaaWSMonitorSnapshotDestroy": (None,[pointer]),
+        "MaaWSMonitorSnapshotGetCount": (MaaWSBool,[pointer,C.POINTER(C.c_uint32),C.POINTER(C.c_uint64)]),
+        "MaaWSMonitorSnapshotGetInfo": (MaaWSBool,[pointer,C.c_uint32,C.POINTER(F.MaaWSMonitorInfo)]),
+        "MaaWSManagerCreate": (pointer,[C.POINTER(F.MaaWSCaptureOptions),C.POINTER(F.MaaWSError)]),
+        "MaaWSManagerDestroy": (None,[pointer]),
+        "MaaWSManagerRegisterCustomUnit": (MaaWSBool,[pointer,C.c_char_p,C.c_uint32,C.c_uint32,C.POINTER(_Callbacks),pointer]),
+        "MaaWSManagerConnect": (MaaWSBool,[pointer]),
+        "MaaWSManagerScreencap": (MaaWSBool,[pointer,C.POINTER(pointer)]),
+        "MaaWSManagerGetLastError": (MaaWSBool,[pointer,C.POINTER(F.MaaWSError)]),
+        "MaaWSManagerSelectedUnitName": (C.c_char_p,[pointer]),
+        "MaaWSManagerInactive": (None,[pointer]),
+        "MaaWSFrameGetImage": (MaaWSBool,[pointer,C.POINTER(F.MaaWSImageView)]),
+        "MaaWSFrameGetInfo": (MaaWSBool,[pointer,C.POINTER(F.MaaWSFrameInfo)]),
+        "MaaWSFrameDestroy": (None,[pointer]),
+    }
+    for name,(result,args) in prototypes.items():
+        func = getattr(lib,name)
+        func.restype,func.argtypes = result,args
 
-# ---------------------------------------------------------------------------
-# 数据类型（与 MaaWSCustomScreencap.h 对齐）
-# ---------------------------------------------------------------------------
+def _new(kind):
+    value = kind()
+    value.struct_size = C.sizeof(value)
+    return value
 
-MaaWSBool = ctypes.c_ubyte
+def available_methods():
+    return _loader.load().MaaWSManagerGetAvailableMethods()
 
+def runtime_info():
+    out = _new(F.MaaWSRuntimeInfo)
+    if not _loader.load().MaaWSGetRuntimeInfo(C.byref(out)):
+        raise RuntimeError("Runtime info query failed")
+    return from_native(out,RuntimeInfo)
 
-class ImageBuffer(ctypes.Structure):
-    """MaaWSImageBuffer：像素（BGRA/BGR）+ 尺寸 + 步长。"""
+def method_capabilities(method):
+    out,e = _new(F.MaaWSMethodCapabilities),_new(F.MaaWSError)
+    if not _loader.load().MaaWSGetMethodCapabilities(integer(method),C.byref(out),C.byref(e)):
+        raise CaptureException(from_native(e,CaptureError))
+    return from_native(out,MethodCapabilities)
 
-    _fields_ = [
-        ("data", ctypes.POINTER(ctypes.c_ubyte)),
-        ("width", ctypes.c_int32),
-        ("height", ctypes.c_int32),
-        ("channels", ctypes.c_int32),
-        ("step", ctypes.c_int32),
-    ]
-
-    def to_bytes(self) -> bytes:
-        """复制像素数据为 bytes（按 step 行序）。"""
-        if not self.data or self.width <= 0 or self.height <= 0:
-            return b""
-        row = self.step if self.step > 0 else self.width * self.channels
-        return ctypes.string_at(self.data, row * self.height)
-
-    def to_numpy(self):
-        """转换为 numpy 数组（BGR）。需已安装 numpy（extras：pip install maa-capture[numpy]）。"""
-        import numpy as np
-
-        arr = np.frombuffer(self.to_bytes(), dtype=np.uint8)
-        return arr.reshape(self.height, self.step)[:, : self.width * self.channels].reshape(
-            self.height, self.width, self.channels
-        )
-
-    @dataclass
-    class Info:
-        width: int
-        height: int
-        channels: int
-        step: int
-        data: bytes
-
-
-# 回调原型。
-# 注意：ctypes 回调收到 POINTER(Structure) 参数时转换成的 Structure 是【副本】，
-# 对其字段的修改不会写回原生内存。因此 screencap 回调一律用裸指针 (c_void_p)，
-# 由包装层通过 ImageBuffer.from_address 构造"指针背书"的结构，写入才能持久。
-_screencap_cb_type = ctypes.CFUNCTYPE(MaaWSBool, ctypes.c_void_p, ctypes.c_void_p)
-_bool_cb_type = ctypes.CFUNCTYPE(MaaWSBool, ctypes.c_void_p)
-
+def monitors():
+    lib = _loader.load()
+    e = _new(F.MaaWSError)
+    snapshot = lib.MaaWSMonitorSnapshotCreate(C.byref(e))
+    if not snapshot:
+        raise CaptureException(from_native(e,CaptureError))
+    try:
+        count,token = C.c_uint32(),C.c_uint64()
+        if not lib.MaaWSMonitorSnapshotGetCount(snapshot,C.byref(count),C.byref(token)):
+            raise RuntimeError("Snapshot count query failed")
+        items = []
+        for index in range(count.value):
+            item = _new(F.MaaWSMonitorInfo)
+            if not lib.MaaWSMonitorSnapshotGetInfo(snapshot,index,C.byref(item)):
+                raise RuntimeError("Snapshot item query failed")
+            items.append(from_native(item,MonitorInfo))
+        return MonitorSnapshot(tuple(items),token.value)
+    finally:
+        lib.MaaWSMonitorSnapshotDestroy(snapshot)
 
 class ScreencapCallbacks:
-    """
-    C 回调封装（MaaWSCustomScreencapCallbacks）。
-    screencap(arg, out) -> int：把图像写入 out（推荐 4 通道 BGRA），成功返回 1。
-    connect/connected/inactive 可选，返回 1/0。
-    """
-
-    def __init__(
-        self,
-        screencap: Callable[[Optional[object], ImageBuffer], int],
-        trans_arg: Optional[object] = None,
-        connect: Optional[Callable[[Optional[object]], int]] = None,
-        connected: Optional[Callable[[Optional[object]], int]] = None,
-        inactive: Optional[Callable[[Optional[object]], int]] = None,
-    ):
-        self._trans_arg = trans_arg
-        self._screencap_cb = self._make_screencap_wrapper(screencap) if screencap else None
-        self._connect_cb = _bool_cb_type(connect) if connect else None
-        self._connected_cb = _bool_cb_type(connected) if connected else None
-        self._inactive_cb = _bool_cb_type(inactive) if inactive else None
-
-    def _make_screencap_wrapper(self, user_fn):
-        @_screencap_cb_type
-        def wrapper(trans_arg, buf_ptr):
-            if not buf_ptr:
-                return 0
+    def __init__(self, screencap, *, connect=None, inactive=None):
+        self._pixels = None
+        def safe(fn, fallback):
             try:
-                out = ImageBuffer.from_address(buf_ptr)
-            except (ValueError, TypeError):
-                return 0
-            try:
-                return 1 if user_fn(trans_arg, out) else 0
+                return fn()
             except Exception:
-                logging.getLogger(__name__).exception("Screenshot callback failed")
-                return 0
-
-        wrapper._user_fn = user_fn  # 保活引用（防 GC 释放用户函数）
-        return wrapper
-
-    def _ctor(self) -> ctypes.Structure:
-        class Struct(ctypes.Structure):
-            _fields_ = [
-                ("connect", _bool_cb_type),
-                ("connected", _bool_cb_type),
-                ("screencap", _screencap_cb_type),
-                ("inactive", _bool_cb_type),
-            ]
-
-        s = Struct()
-        s.connect = self._connect_cb or _bool_cb_type()
-        s.connected = self._connected_cb or _bool_cb_type()
-        s.screencap = self._screencap_cb
-        s.inactive = self._inactive_cb or _bool_cb_type()
-        return s
-
-
-def available_methods() -> int:
-    """本构建在本平台可注册的内置截图方式位掩码（编译期视角）。
-
-    可与 Manager 的 METHOD_* 常量按位与判断某方式是否可用；具体单元是否
-    实际可用仍由 connect() 的测速淘汰决定。
-    """
-    dll = _loader.load()
-    Manager._setup_prototypes(dll)
-    return dll.MaaWSManagerGetAvailableMethods()
-
+                logging.getLogger(__name__).exception("Capture callback failed")
+                return fallback
+        def capture(_ctx, out, error):
+            def invoke():
+                frame = screencap()
+                if frame is None:
+                    return 0
+                image = frame.image
+                self._pixels = C.create_string_buffer(image.data)
+                native = _new(F.MaaWSFrameInput)
+                native.image = F.MaaWSImageView(C.sizeof(F.MaaWSImageView),integer(image.width,32),
+                    integer(image.height,32),integer(image.channels,32),integer(image.step),len(image.data),C.addressof(self._pixels))
+                native.info = to_native(frame.source,F.MaaWSFrameInfo)
+                out[0] = native
+                return 1
+            return safe(invoke,0)
+        def release(_ctx):
+            self._pixels = None
+        self._connect = _BOOL(lambda _: safe(lambda: bool(connect()) if connect else True,False))
+        self._capture = _CAPTURE(capture)
+        self._release = _VOID(release)
+        self._inactive = _VOID(lambda _: safe(lambda: inactive() if inactive else None,None))
+        self._native = _Callbacks(C.sizeof(_Callbacks),0,self._connect,self._capture,self._release,self._inactive)
 
 class Manager:
-    """截图管理器（MaaWSManager*）：内置方式测速选择 + 外部回调单元注册。
-
-    hwnd 的平台语义：
-      - Windows：目标窗口 HWND（int）；为 None 时仅 DXGI_DesktopDup 可用（主显示器整屏）
-      - Linux  ：忽略；PipeWire / Wlr 目标经 set_pipewire_target / set_wlr_socket 配置
-      - macOS  ：目标窗口 CGWindowID；None 即 0 = 整个主显示器
-    """
-
-    # 截图方式位掩码（与 C 头文件常数一致）
     METHOD_NONE = 0
-    METHOD_GDI = 1 << 0
-    METHOD_FRAMEPOOL = 1 << 1
-    METHOD_DXGI_DESKTOP_DUP = 1 << 2
-    METHOD_DXGI_DESKTOP_DUP_WINDOW = 1 << 3
-    METHOD_PRINTWINDOW = 1 << 4
-    METHOD_SCREENDC = 1 << 5
-    METHOD_PIPEWIRE = 1 << 6 # Linux
-    METHOD_WLR = 1 << 7 # Linux
-    METHOD_SCREENCAPTUREKIT = 1 << 8 # macOS
-    METHOD_ALL = (1 << 64) - 1
-    METHOD_FOREGROUND = METHOD_DXGI_DESKTOP_DUP_WINDOW | METHOD_SCREENDC
-    METHOD_BACKGROUND = METHOD_FRAMEPOOL | METHOD_PRINTWINDOW
-
-    def __init__(self, hwnd: Optional[int] = None, methods: int = METHOD_ALL):
-        """
-        hwnd: 平台相关目标（见类文档）。为 None 时按平台回退（Windows/Linux 语义见上）。
-        methods: 参与测速的内置方式位掩码；只使用自定义单元时传 METHOD_NONE。
-        """
-        dll = _loader.load()
-        self._setup_prototypes(dll)
-
-        self._dll = dll
-        self._handle = dll.MaaWSManagerCreate(hwnd or 0, methods)
+    METHOD_AUTO = 0
+    METHOD_GDI = 1
+    METHOD_FRAMEPOOL = 2
+    METHOD_DXGI_DESKTOP_DUP = 4
+    METHOD_DXGI_DESKTOP_DUP_WINDOW = 8
+    METHOD_PRINTWINDOW = 16
+    METHOD_SCREENDC = 32
+    METHOD_PIPEWIRE = 64
+    METHOD_WLR = 128
+    METHOD_SCREENCAPTUREKIT = 256
+    def __init__(self, *, target: CaptureTarget, methods: int = 0):
+        self._handle = None
+        self._callbacks = []
+        options = _new(F.MaaWSCaptureOptions)
+        options.target = target_native(target)
+        options.methods = integer(methods)
+        self._lib = _loader.load()
+        e = _new(F.MaaWSError)
+        self._handle = self._lib.MaaWSManagerCreate(C.byref(options),C.byref(e))
         if not self._handle:
-            raise RuntimeError("MaaWSManagerCreate failed")
-
-        self._callbacks: list[ScreencapCallbacks] = []  # 持有回调对象引用，防 GC
-        self._native_structs: list = []  # 持有回调结构体内存，C 侧保存了其指针
-
-    @staticmethod
-    def _setup_prototypes(dll: ctypes.CDLL) -> None:
-        dll.MaaWSManagerCreate.restype = ctypes.c_void_p
-        dll.MaaWSManagerCreate.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
-        dll.MaaWSManagerDestroy.restype = None
-        dll.MaaWSManagerDestroy.argtypes = [ctypes.c_void_p]
-        dll.MaaWSManagerSetPipeWireTarget.restype = MaaWSBool
-        dll.MaaWSManagerSetPipeWireTarget.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_uint32]
-        dll.MaaWSManagerSetWlrSocket.restype = MaaWSBool
-        dll.MaaWSManagerSetWlrSocket.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-        dll.MaaWSManagerSetMonitorIndex.restype = MaaWSBool
-        dll.MaaWSManagerSetMonitorIndex.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        dll.MaaWSManagerGetAvailableMethods.restype = ctypes.c_uint64
-        dll.MaaWSManagerGetAvailableMethods.argtypes = []
-        dll.MaaWSManagerGetMonitorCount.restype = MaaWSBool
-        dll.MaaWSManagerGetMonitorCount.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-        dll.MaaWSManagerGetMonitorInfo.restype = MaaWSBool
-        dll.MaaWSManagerGetMonitorInfo.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-            ctypes.POINTER(ctypes.c_uint32),
-            ctypes.c_char_p,
-            ctypes.POINTER(ctypes.c_uint32),
-        ]
-        dll.MaaWSManagerRegisterCustomUnit.restype = MaaWSBool
-        dll.MaaWSManagerRegisterCustomUnit.argtypes = [
-            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p,
-        ]
-        dll.MaaWSManagerConnect.restype = MaaWSBool
-        dll.MaaWSManagerConnect.argtypes = [ctypes.c_void_p]
-        dll.MaaWSManagerScreencap.restype = MaaWSBool
-        dll.MaaWSManagerScreencap.argtypes = [ctypes.c_void_p, ctypes.POINTER(ImageBuffer)]
-        dll.MaaWSManagerSelectedUnitName.restype = ctypes.c_char_p
-        dll.MaaWSManagerSelectedUnitName.argtypes = [ctypes.c_void_p]
-        dll.MaaWSManagerInactive.restype = None
-        dll.MaaWSManagerInactive.argtypes = [ctypes.c_void_p]
-
-    # ---- Linux 截图目标配置（connect() 前调用；其他平台为 no-op）----
-
-    def set_pipewire_target(self, fd: int = -1, node_id: int = 0) -> bool:
-        """设置 PipeWire 目标：fd >= 0 时走 portal fd（连接后 fd 归库所有），
-        否则连接会话 daemon。两者都未指定时 PipeWire 单元不参与构建。"""
-        return bool(self._dll.MaaWSManagerSetPipeWireTarget(self._require_handle(), fd, node_id))
-
-    def set_wlr_socket(self, socket_name: Optional[str] = None) -> bool:
-        """设置 wlr-screencopy 的 Wayland socket 名；None/空串 = WAYLAND_DISPLAY 默认值。"""
-        return bool(
-            self._dll.MaaWSManagerSetWlrSocket(
-                self._require_handle(), socket_name.encode("utf-8") if socket_name else None
-            )
-        )
-
-    def set_monitor_index(self, index: int) -> bool:
-        """设置整屏截图的目标显示器索引（connect() 前调用）。
-
-        - Windows：METHOD_DXGI_DESKTOP_DUP 复制的显示器；0 = 主显示器，其余按
-          EnumDisplayMonitors 顺序；设置后优先于 hwnd 定位，越界回退主显示器
-        - Linux：METHOD_WLR 截取的 wl_output（合成器广播顺序，0 = 第一个）；
-          PipeWire 的显示器选择发生在 portal 授权时，本设置不生效
-        - macOS：hwnd 为 None 时 METHOD_SCREENCAPTUREKIT 截取的 display（0 = 第一个）
-        """
-        return bool(self._dll.MaaWSManagerSetMonitorIndex(self._require_handle(), index))
-
-    # ---- 查询辅助 ----
-
-    def monitor_count(self) -> int:
-        """显示器数量（索引语义与 set_monitor_index 一致）。
-
-        Linux：需可连接的 Wayland（Wlr 单元未编入或连接失败返回 0）；
-        macOS：需 TCC 屏幕录制权限，无权限返回 0。
-        """
-        count = ctypes.c_uint32(0)
-        if not self._dll.MaaWSManagerGetMonitorCount(self._require_handle(), ctypes.byref(count)):
-            return 0
-        return count.value
-
-    def monitor_info(self, index: int) -> Optional[dict]:
-        """第 index 号显示器信息，返回 ``{"primary": bool, "name": str}``。
-
-        name：Windows 为设备名（如 ``\\\\.\\DISPLAY2``）、macOS 为本地化名称、
-        Linux 为空串。索引越界返回 None。
-        """
-        primary = ctypes.c_uint32(0)
-        needed = ctypes.c_uint32(0)
-        if not self._dll.MaaWSManagerGetMonitorInfo(self._require_handle(), index, ctypes.byref(primary), None, ctypes.byref(needed)):
-            return None
-        buf = ctypes.create_string_buffer(max(needed.value, 1))
-        if not self._dll.MaaWSManagerGetMonitorInfo(self._require_handle(), index, ctypes.byref(primary), buf, ctypes.byref(needed)):
-            return None
-        return {"primary": bool(primary.value), "name": buf.value.decode("utf-8", "replace")}
-
-    # ---- 通用接口 ----
-
-    def register_custom_unit(self, name: str, callbacks: ScreencapCallbacks) -> bool:
-        """注册外部自定义截图单元（C 回调实现）。"""
-        # 保活：C 侧 CustomScreencapBridge 会保存 callbacks 结构体指针，
-        # 并在 connect()/screencap() 时调用其中的函数指针；若 Python 侧被 GC，
-        # 结构体内存与回调对象释放后即为悬垂指针（访问违例）。
-        self._callbacks.append(callbacks)
-        c_struct = callbacks._ctor()
-        self._native_structs.append(c_struct)
-        return bool(
-            self._dll.MaaWSManagerRegisterCustomUnit(
-                self._require_handle(), name.encode("utf-8"), ctypes.cast(ctypes.byref(c_struct), ctypes.c_void_p), ctypes.c_void_p(id(callbacks))
-            )
-        )
-
-    def connect(self) -> bool:
-        """连接 + 测速选择最快截图方式。"""
-        return bool(self._dll.MaaWSManagerConnect(self._require_handle()))
-
-    def screencap(self) -> Optional[ImageBuffer.Info]:
-        """截图一次。成功返回 ImageBuffer.Info（width/height/channels/step/data），失败返回 None。"""
-        buf = ImageBuffer()
-        if not self._dll.MaaWSManagerScreencap(self._require_handle(), ctypes.byref(buf)):
-            return None
-        return ImageBuffer.Info(
-            width=buf.width,
-            height=buf.height,
-            channels=buf.channels,
-            step=buf.step,
-            data=buf.to_bytes(),
-        )
-
-    def selected_unit_name(self) -> Optional[str]:
-        name = self._dll.MaaWSManagerSelectedUnitName(self._require_handle())
-        return name.decode("utf-8") if name else None
-
-    def inactive(self) -> None:
-        self._dll.MaaWSManagerInactive(self._require_handle())
-
+            raise CaptureException(from_native(e,CaptureError))
+        self.target = target
     @property
-    def closed(self) -> bool:
-        """Whether the native manager has been permanently released."""
-        return not getattr(self, "_handle", None)
-
+    def closed(self):
+        return not self._handle
     def _require_handle(self):
         if self.closed:
             raise RuntimeError("Manager is closed")
         return self._handle
-
-    def close(self) -> None:
-        """Restore capture state and release the native manager; safe to call repeatedly."""
-        handle = getattr(self, "_handle", None)
-        if not handle:
-            return
-        self._handle = None
+    def register_custom_unit(self, source_key, callbacks, *, scope=None, valid_fields=0):
+        scope = self.target.scope if scope is None and isinstance(self.target,CustomTarget) else scope
+        ok = self._lib.MaaWSManagerRegisterCustomUnit(self._require_handle(),text(source_key,512),integer(scope,32),integer(valid_fields,32),C.byref(callbacks._native),None)
+        if ok:
+            self._callbacks.append(callbacks)
+        return bool(ok)
+    def connect(self):
+        return bool(self._lib.MaaWSManagerConnect(self._require_handle()))
+    def last_error(self):
+        e = _new(F.MaaWSError)
+        if not self._lib.MaaWSManagerGetLastError(self._require_handle(),C.byref(e)):
+            raise RuntimeError("Last error query failed")
+        return from_native(e,CaptureError)
+    def screencap(self):
+        frame = C.c_void_p()
+        if not self._lib.MaaWSManagerScreencap(self._require_handle(),C.byref(frame)):
+            return None
         try:
-            self._dll.MaaWSManagerInactive(handle)
+            image,info = _new(F.MaaWSImageView),_new(F.MaaWSFrameInfo)
+            if not self._lib.MaaWSFrameGetImage(frame,C.byref(image)) or not self._lib.MaaWSFrameGetInfo(frame,C.byref(info)):
+                raise RuntimeError("Invalid native frame")
+            return CaptureFrame(Image(image.width,image.height,image.channels,image.step,C.string_at(image.data,image.data_size)),from_native(info,SourceInfo))
         finally:
+            self._lib.MaaWSFrameDestroy(frame)
+    def selected_unit_name(self):
+        value = self._lib.MaaWSManagerSelectedUnitName(self._require_handle())
+        return value.decode("utf-8") if value else None
+    def inactive(self):
+        self._lib.MaaWSManagerInactive(self._require_handle())
+    def close(self):
+        handle = getattr(self,"_handle",None)
+        if handle:
+            self._handle = None
             try:
-                self._dll.MaaWSManagerDestroy(handle)
+                self._lib.MaaWSManagerDestroy(handle)
             finally:
                 self._callbacks.clear()
-                self._native_structs.clear()
-
     def __enter__(self):
         self._require_handle()
         return self
-
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(self,*args):
         self.close()
         return False
-
     def __del__(self):
         try:
             self.close()

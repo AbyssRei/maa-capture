@@ -1,170 +1,123 @@
-"""maa-capture Python 绑定自测。
-
-用法（需先安装包，例如 ``pip install -e bindings/python`` 或安装 wheel）：
-    python tests/test_binding.py [原生库目录]
-
-覆盖：
-  1. 外部回调接口：ScreencapCallbacks 自定义单元注册进 Manager，测速选中并截图
-  2. Manager 内置方式：真实截图一次（无可用桌面/窗口的环境自动跳过）
-"""
-
+"""Deterministic ABI 2 binding regression entry; desktop checks are explicit."""
 from __future__ import annotations
-
-import ctypes
-import os
+import ctypes as C
+from dataclasses import FrozenInstanceError, replace
 import sys
 import unittest
+from unittest.mock import Mock
+from maa_capture import *
+from maa_capture import __version__
+from maa_capture import _loader, _ffi as F
+from maa_capture._types import to_native
 
-from maa_capture import ImageBuffer, Manager, ScreencapCallbacks, available_methods, set_lib_path
-
-
-def test_query_helpers():
-    """查询辅助：可用方式位掩码 + 显示器枚举。"""
-    methods = available_methods()
-    assert methods != 0, f"available_methods returned {methods:#x}"
-
-    mgr = Manager(hwnd=None, methods=Manager.METHOD_NONE)
-    count = mgr.monitor_count()
-    if count == 0:
-        # 无显示器信息的环境（Linux 无 Wayland / macOS 无 TCC 权限）
-        print(f"[PASS] query helpers: methods={methods:#x}, monitors=0 (unavailable)")
-        return True
-
-    info0 = mgr.monitor_info(0)
-    assert info0 is not None, "monitor_info(0) returned None"
-    assert isinstance(info0["primary"], bool) and isinstance(info0["name"], str)
-    if sys.platform == "win32":
-        assert info0["primary"], "Windows 索引 0 应为主显示器"
-    assert mgr.monitor_info(count) is None, "越界索引应返回 None"
-
-    names = [mgr.monitor_info(i)["name"] for i in range(count)]
-    print(f"[PASS] query helpers: methods={methods:#x}, monitors={count} {names}")
-    return True
-
-
-
-
-def test_callback_exception():
-    def fail(_arg, _out):
-        raise ValueError("callback failure")
-    with Manager(methods=Manager.METHOD_NONE) as manager:
-        assert manager.register_custom_unit("failure", ScreencapCallbacks(screencap=fail))
-        with unittest.TestCase().assertLogs("maa_capture._core", level="ERROR"):
-            assert not manager.connect()
-    print("[PASS] callback exceptions become a capture failure")
-
-
-def test_manager_lifecycle():
-    """Context exit releases native callbacks even while propagating an exception."""
-    calls = []
-    callbacks = ScreencapCallbacks(
-        screencap=lambda _arg, _out: 0,
-        inactive=lambda _arg: calls.append("inactive") or 1,
-    )
-    mgr = Manager(methods=Manager.METHOD_NONE)
-    try:
-        with mgr as active:
-            assert active is mgr and not mgr.closed
-            assert mgr.register_custom_unit("lifecycle", callbacks)
+class BindingTests(unittest.TestCase):
+    def frame(self, value=10):
+        return provider_frame(source_key="test",data=bytes([value,20,30,255,40,50,60,255,0,0,0,0]),width=2,height=1,step=12)
+    def test_callback_frame_and_lifetime(self):
+        calls = []
+        value = [10]
+        cb = ScreencapCallbacks(lambda:self.frame(value[0]),inactive=lambda:calls.append(1))
+        manager = Manager(target=CustomTarget("test"))
+        with manager:
+            self.assertTrue(manager.register_custom_unit("test",cb))
+            self.assertTrue(manager.connect(), manager.last_error())
+            first = manager.screencap()
+            value[0] = 99
+            second = manager.screencap()
+            self.assertEqual(first.image.data,bytes([10,20,30,40,50,60]))
+            self.assertEqual(second.image.data[0],99)
+            self.assertEqual(first.source.source_key,"test")
+            self.assertEqual(first.source.verification,1)
+            self.assertGreater(second.source.frame_id,first.source.frame_id)
+            with self.assertRaises(FrozenInstanceError):
+                first.source.source_key = "wrong"
+        self.assertEqual(first.image.data[0],10)
+        manager.close()
+        self.assertEqual(calls,[1])
+        with self.assertRaisesRegex(RuntimeError,"closed"):
+            manager.screencap()
+    def test_mismatch_never_publishes(self):
+        with Manager(target=CustomTarget("test")) as m:
+            cb = ScreencapCallbacks(lambda:provider_frame(source_key="other",data=b"123",width=1,height=1,channels=3))
+            self.assertTrue(m.register_custom_unit("test",cb))
+            self.assertFalse(m.connect())
+            self.assertEqual(m.last_error().code,7)
+            self.assertEqual(m.last_error(),m.last_error())
+            self.assertIsNone(m.screencap())
+            self.assertEqual(m.last_error().code,2)
+    def test_callback_exception(self):
+        def fail():
             raise ValueError("sentinel")
-    except ValueError as error:
-        assert str(error) == "sentinel"
-    else:
-        raise AssertionError("Context manager swallowed the exception")
-    assert mgr.closed and calls == ["inactive"]
-    mgr.close()
-    assert calls == ["inactive"]
-    try:
-        mgr.connect()
-    except RuntimeError as error:
-        assert "closed" in str(error)
-    else:
-        raise AssertionError("Closed manager accepted an operation")
-    print("[PASS] deterministic manager lifecycle")
-
-
-def make_gradient(width=8, height=6):
-    """生成 BGRA 渐变像素。"""
-    px = bytearray(width * height * 4)
-    i = 0
-    for y in range(height):
-        for x in range(width):
-            px[i] = x * 255 // width  # B
-            px[i + 1] = y * 255 // height  # G
-            px[i + 2] = 128  # R
-            px[i + 3] = 255  # A
-            i += 4
-    return bytes(px), width, height
-
-
-def test_custom_callback():
-    """外部回调实现截图（自定义单元注册进 Manager）。"""
-    pixels, w, h = make_gradient()
-    holder = {"pixels": pixels, "w": w, "h": h}
-
-    def on_screencap(_arg, out: ImageBuffer) -> int:
-        data = holder["pixels"]
-        buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
-        holder["buffer"] = buf  # Keep pixels alive until the native caller copies them.
-        out.data = ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))
-        out.width = holder["w"]
-        out.height = holder["h"]
-        out.channels = 4  # BGRA -> 桥接层转 BGR
-        out.step = holder["w"] * 4
-        return 1
-
-    cb = ScreencapCallbacks(screencap=on_screencap)
-    mgr = Manager(hwnd=None, methods=Manager.METHOD_NONE)
-    assert mgr.register_custom_unit("python-gradient", cb), "register_custom_unit failed"
-    assert mgr.connect(), "connect failed"
-    assert mgr.selected_unit_name() == "python-gradient", mgr.selected_unit_name()
-
-    info = mgr.screencap()
-    assert info is not None, "screencap returned None"
-    assert (info.width, info.height) == (w, h), (info.width, info.height)
-    assert info.channels == 3, f"expected normalized BGR 3ch, got {info.channels}"
-    # 首像素 BGR = (0, 0, 128)
-    assert info.data[:3] == bytes([0, 0, 128]), info.data[:6]
-    mgr.inactive()
-    del mgr
-    print("[PASS] custom callback unit")
-
-    return True
-
-
-def test_manager_builtin():
-    """内置方式：真实截图一次（无可用桌面/输出则跳过）。"""
-    if sys.platform == "win32":
-        from maa_capture import foreground_window
-
-        hwnd = foreground_window()
-        if not hwnd:
-            print("[SKIP] no foreground window (headless)")
-            return True
-        mgr = Manager(hwnd=int(hwnd), methods=Manager.METHOD_ALL)
-    else:
-        # Linux/macOS：hwnd 语义由平台解释（整屏/输出），CI 无桌面环境则 connect 失败跳过
-        mgr = Manager(hwnd=None, methods=Manager.METHOD_ALL)
-
-    if not mgr.connect():
-        print("[SKIP] no builtin screencap method works in this environment")
-        return True
-
-    info = mgr.screencap()
-    assert info is not None, "builtin screencap failed"
-    assert info.width > 0 and info.height > 0, (info.width, info.height)
-    assert info.channels == 3, info.channels
-    print(f"[PASS] builtin manager: selected={mgr.selected_unit_name()} {info.width}x{info.height}")
-    mgr.inactive()
-    return True
-
+        with Manager(target=CustomTarget("test")) as m:
+            self.assertTrue(m.register_custom_unit("test",ScreencapCallbacks(fail)))
+            with self.assertLogs("maa_capture._core",level="ERROR"):
+                self.assertFalse(m.connect())
+    def test_invalid_provider_mapping(self):
+        frame=self.frame()
+        invalid=replace(frame,source=replace(frame.source,valid_fields=4,scale_x=float("nan"),scale_y=1.0))
+        with Manager(target=CustomTarget("test")) as m:
+            self.assertTrue(m.register_custom_unit("test",ScreencapCallbacks(lambda:invalid)))
+            self.assertFalse(m.connect())
+            self.assertEqual(m.last_error().code,12)
+    def test_integer_and_target_validation(self):
+        with self.assertRaises(ValueError):
+            to_native(replace(self.frame().source,native_id=1<<64),F.MaaWSFrameInfo)
+        with self.assertRaises(TypeError):
+            Manager()
+        for value in (-1,1<<64,True):
+            with self.assertRaises((ValueError,TypeError)):
+                Manager(target=WindowTarget(value,1))
+        with self.assertRaises(ValueError):
+            Manager(target=MonitorTarget("x"*512))
+        with self.assertRaises(ValueError):
+            Manager(target=CustomTarget("a\0b"))
+        with self.assertRaises(CaptureException):
+            Manager(target=CustomTarget("test"),methods=1)
+        with self.assertRaises(CaptureException):
+            method_capabilities(3)
+        self.assertEqual(method_capabilities(32).scopes,2)
+    def test_runtime_and_abi(self):
+        info = runtime_info()
+        self.assertEqual(info.abi_version,2)
+        self.assertEqual(info.version,__version__)
+        self.assertEqual(info.platform,{"win32":"windows","darwin":"macos","linux":"linux"}[sys.platform])
+        self.assertEqual(C.sizeof(F.MaaWSCaptureTarget),816)
+        self.assertEqual(C.sizeof(F.MaaWSImageView),40)
+        missing = Mock(spec=[])
+        with self.assertRaisesRegex(RuntimeError,rf"package={__version__}.*native=unknown.*unknown"):
+            _loader._validate(missing,None)
+        wrong = Mock()
+        wrong.MaaWSGetAbiVersion.return_value = 1
+        with self.assertRaisesRegex(RuntimeError,"expected ABI 2, got 1"):
+            _loader._validate(wrong,"test.dll")
+        wrong.MaaWSManagerCreate.assert_not_called()
+        partial = Mock(spec=["MaaWSGetAbiVersion"])
+        partial.MaaWSGetAbiVersion.return_value = 2
+        with self.assertRaisesRegex(RuntimeError,"MaaWSGetRuntimeInfo"):
+            _loader._validate(partial,"test.dll")
+    def test_snapshots(self):
+        if sys.platform not in ("win32","darwin"):
+            with self.assertRaises(CaptureException) as result:
+                monitors()
+            self.assertEqual(result.exception.error.code,3)
+            return
+        try:
+            snapshot = monitors()
+        except CaptureException as error:
+            self.skipTest(f"Desktop enumeration unavailable: {error}")
+        self.assertIsInstance(snapshot.items,tuple)
+        for item in snapshot.items:
+            self.assertEqual(item.layout_token,snapshot.layout_token)
+            self.assertTrue(item.monitor_key)
+            self.assertGreater(item.pixel_width,0)
+    def test_cleanup_on_python_exception(self):
+        m = Manager(target=CustomTarget("test"))
+        with self.assertRaisesRegex(ValueError,"sentinel"):
+            with m:
+                raise ValueError("sentinel")
+        self.assertTrue(m.closed)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        set_lib_path(sys.argv[1])
-    test_custom_callback()
-    test_manager_lifecycle()
-    test_callback_exception()
-    test_query_helpers()
-    test_manager_builtin()
-    print("ALL PASS")
+    if len(sys.argv)>1 and not sys.argv[1].startswith("-"):
+        set_lib_path(sys.argv.pop(1))
+    unittest.main()

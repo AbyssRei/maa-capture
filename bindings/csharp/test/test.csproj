@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="..\MaaCapture.cs" Link="MaaCapture.cs" />
+    <Compile Include="..\NativeTypes.cs" Link="NativeTypes.cs" />
   </ItemGroup>
 
 </Project>

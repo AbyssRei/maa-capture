@@ -1,217 +1,91 @@
-//! maa-capture —— Rust 绑定
-//!
-//! 对应 MaaFramework 的 maa-framework-rs 角色。封装截图管理器 C API：
-//!   - `Manager`：内置 6 种 Win32 截图方式的测速选择 + 截图
-//!   - `ScreencapCallbacks`：外部回调接口（对应 `MaaCustomControllerCallbacks::screencap`）
-//!
-//! 链接：`#[link(name = "maa-capture")]` 需要导入库 `maa-capture.lib`
-//! （与 DLL 同目录）。构建时可用 `LIB` 环境变量指向该目录，运行时把 DLL 目录加入 PATH。
-//!
-//! ```no_run
-//! use maa_capture::{Manager, Methods};
-//! let hwnd = maa_capture::foreground_window();
-//! if hwnd != 0 {
-//!     let mgr = Manager::new(hwnd, Methods::ALL);
-//!     if mgr.connect() {
-//!         if let Some(img) = mgr.screencap() {
-//!             println!("{}x{}", img.width, img.height);
-//!         }
-//!     }
-//! }
-//! ```
-
-#![allow(clippy::missing_safety_doc)]
-
-use std::ffi::{c_char, c_int, c_void};
+//! ABI 2 explicit targets and owned frames. Windows x64 runtime support.
+pub mod types;
+pub use types::*;
+use std::ffi::{c_char,c_void,CString};
 use std::ptr;
-
-// ---------------------------------------------------------------------------
-// FFI 绑定（maa-capture.dll）
-// ---------------------------------------------------------------------------
-
-#[link(name = "maa-capture")]
+use std::mem::size_of;
+use std::panic::{catch_unwind,AssertUnwindSafe};
+#[link(name="maa-capture")]
 unsafe extern "C" {
-    fn MaaWSManagerCreate(hwnd: *mut c_void, methods: u64) -> *mut c_void;
-    fn MaaWSManagerDestroy(handle: *mut c_void);
-    fn MaaWSManagerRegisterCustomUnit(
-        handle: *mut c_void,
-        name: *const c_char,
-        callbacks: *const ScreencapCallbacks,
-        trans_arg: *mut c_void,
-    ) -> u8;
-    fn MaaWSManagerConnect(handle: *mut c_void) -> u8;
-    fn MaaWSManagerScreencap(handle: *mut c_void, out: *mut ImageBuffer) -> u8;
-    fn MaaWSManagerSelectedUnitName(handle: *mut c_void) -> *const c_char;
-    fn MaaWSManagerInactive(handle: *mut c_void);
+    fn MaaWSGetAbiVersion()->u32;
+    fn MaaWSManagerCreate(o:*const MaaWSCaptureOptions,e:*mut MaaWSError)->*mut c_void;
+    fn MaaWSManagerDestroy(h:*mut c_void);
+    fn MaaWSManagerConnect(h:*mut c_void)->u8;
+    fn MaaWSManagerScreencap(h:*mut c_void,f:*mut *mut c_void)->u8;
+    fn MaaWSFrameGetImage(f:*mut c_void,i:*mut MaaWSImageView)->u8;
+    fn MaaWSFrameGetInfo(f:*mut c_void,i:*mut MaaWSFrameInfo)->u8;
+    fn MaaWSFrameDestroy(f:*mut c_void);
+    fn MaaWSManagerGetLastError(h:*mut c_void,e:*mut MaaWSError)->u8;
+    fn MaaWSManagerInactive(h:*mut c_void);
+    fn MaaWSManagerRegisterCustomUnit(h:*mut c_void,key:*const c_char,scope:u32,valid:u32,cb:*const Callbacks,ctx:*mut c_void)->u8;
 }
-
-#[link(name = "user32")]
-unsafe extern "system" {
-    fn GetForegroundWindow() -> *mut c_void;
+pub fn text<const N:usize>(s:&str)->Result<[u8;N],String> {
+    if s.len()>=N||s.contains('\0'){return Err("UTF-8 key exceeds capacity or contains NUL".into());}
+    let mut out=[0;N];out[..s.len()].copy_from_slice(s.as_bytes());Ok(out)
 }
-
-/// 当前前台窗口句柄（user32!GetForegroundWindow），无窗口返回 0。
-pub fn foreground_window() -> usize {
-    unsafe { GetForegroundWindow() as usize }
+fn zero<T>()->T {unsafe{std::mem::zeroed()}}
+pub struct Target(MaaWSCaptureTarget);
+impl Target {
+    pub fn monitor(key:&str)->Result<Self,String>{let mut t:MaaWSCaptureTarget=zero();t.struct_size=size_of::<MaaWSCaptureTarget>() as u32;t.type_=1;t.source_key=text(key)?;Ok(Self(t))}
+    pub fn window(id:u64,pid:u64)->Result<Self,String>{if id==0{return Err("Window ID is required".into());}let mut t:MaaWSCaptureTarget=zero();t.struct_size=size_of::<MaaWSCaptureTarget>() as u32;t.type_=2;t.platform=1;t.window_id=id;t.process_id=pid;Ok(Self(t))}
+    pub fn custom(key:&str,scope:u32)->Result<Self,String>{let mut t:MaaWSCaptureTarget=zero();t.struct_size=size_of::<MaaWSCaptureTarget>() as u32;t.type_=5;t.scope=scope;t.source_key=text(key)?;Ok(Self(t))}
 }
-
-// ---------------------------------------------------------------------------
-// 类型（与 MaaWSCustomScreencap.h 对齐）
-// ---------------------------------------------------------------------------
-
-/// 截图方式位掩码（与 C 头文件常数一致）
-pub struct Methods;
-
-impl Methods {
-    pub const NONE: u64 = 0;
-    pub const GDI: u64 = 1 << 0;
-    pub const FRAMEPOOL: u64 = 1 << 1;
-    pub const DXGI_DESKTOP_DUP: u64 = 1 << 2;
-    pub const DXGI_DESKTOP_DUP_WINDOW: u64 = 1 << 3;
-    pub const PRINTWINDOW: u64 = 1 << 4;
-    pub const SCREENDC: u64 = 1 << 5;
-    pub const ALL: u64 = u64::MAX;
-    pub const FOREGROUND: u64 = Self::DXGI_DESKTOP_DUP_WINDOW | Self::SCREENDC;
-    pub const BACKGROUND: u64 = Self::FRAMEPOOL | Self::PRINTWINDOW;
-}
-
-/// 输出图像缓冲（对应 C 的 MaaWSImageBuffer）。
-/// `data` 指向 DLL 内部图像（BGR 三通道，行主序），有效期至下一次调用 / 销毁。
-#[repr(C)]
-pub struct ImageBuffer {
-    pub data: *mut u8,
-    pub width: c_int,
-    pub height: c_int,
-    pub channels: c_int,
-    pub step: c_int,
-}
-
-impl ImageBuffer {
-    /// 拷贝像素为 Vec<u8>（行主序，按 step 计算每行）。
-    pub fn to_bytes(&self) -> Vec<u8> {
-        if self.data.is_null() || self.width <= 0 || self.height <= 0 {
-            return Vec::new();
-        }
-        let row = if self.step > 0 {
-            self.step as usize
-        } else {
-            (self.width * self.channels) as usize
-        };
-        let total = row * self.height as usize;
-        unsafe { std::slice::from_raw_parts(self.data, total).to_vec() }
+#[derive(Clone)]
+pub struct CaptureFrame {pub data:Vec<u8>,pub width:u32,pub height:u32,pub channels:u32,pub step:u64,pub source:MaaWSFrameInfo}
+impl CaptureFrame {
+    pub fn provider(key:&str,data:Vec<u8>,width:u32,height:u32,channels:u32,step:u64,scope:u32)->Result<Self,String>{
+        let mut source:MaaWSFrameInfo=zero();source.struct_size=size_of::<MaaWSFrameInfo>() as u32;source.target_type=5;source.scope=scope;source.source_key=text(key)?;
+        Ok(Self{data,width,height,channels,step,source})
     }
 }
-
-/// 外部回调类型（对应 MaaCustomControllerCallbacks 的回调）。
-pub type BoolCallback = unsafe extern "C" fn(trans_arg: *mut c_void) -> u8;
-pub type ScreencapCallback = unsafe extern "C" fn(trans_arg: *mut c_void, out: *mut ImageBuffer) -> u8;
-
-/// 外部回调集合（对应 C 的 MaaWSCustomScreencapCallbacks）。
-///
-/// 字段可为 None（C 侧对应 NULL 函数指针）。
 #[repr(C)]
-pub struct ScreencapCallbacks {
-    pub connect: Option<BoolCallback>,
-    pub connected: Option<BoolCallback>,
-    pub screencap: Option<ScreencapCallback>,
-    pub inactive: Option<BoolCallback>,
+struct Callbacks {size:u32,reserved:u32,connect:Option<unsafe extern "C" fn(*mut c_void)->u8>,capture:unsafe extern "C" fn(*mut c_void,*mut MaaWSFrameInput,*mut MaaWSError)->u8,release:unsafe extern "C" fn(*mut c_void),inactive:unsafe extern "C" fn(*mut c_void)}
+struct Provider {capture:Box<dyn FnMut()->Option<CaptureFrame>>,frame:Option<CaptureFrame>,inactive:Box<dyn FnMut()>}
+unsafe extern "C" fn capture(ctx:*mut c_void,out:*mut MaaWSFrameInput,_error:*mut MaaWSError)->u8 {
+    catch_unwind(AssertUnwindSafe(||{
+        let p=unsafe{&mut *(ctx as *mut Provider)};p.frame=(p.capture)();
+        if let Some(f)=&p.frame {
+            let mut input:MaaWSFrameInput=zero();input.struct_size=size_of::<MaaWSFrameInput>() as u32;
+            input.image=MaaWSImageView{struct_size:size_of::<MaaWSImageView>() as u32,width:f.width,height:f.height,channels:f.channels,step:f.step,data_size:f.data.len() as u64,data:f.data.as_ptr() as *const c_void};
+            input.info=f.source;unsafe{*out=input};1
+        }else{0}
+    })).unwrap_or(0)
 }
-
-// ---------------------------------------------------------------------------
-// 截图管理器
-// ---------------------------------------------------------------------------
-
-/// 截图管理器（MaaWSManager*）。
-pub struct Manager {
-    handle: *mut c_void,
-    /// 回调结构体由本对象持有（Box 固定地址），drop 时释放。
-    callbacks: Vec<*mut ScreencapCallbacks>,
-}
-
-unsafe impl Send for Manager {}
-unsafe impl Sync for Manager {}
-
+unsafe extern "C" fn release(ctx:*mut c_void){unsafe{(*(ctx as *mut Provider)).frame=None;}}
+unsafe extern "C" fn inactive(ctx:*mut c_void){let _=catch_unwind(AssertUnwindSafe(||unsafe{((*(ctx as *mut Provider)).inactive)()}));}
+pub struct Manager {handle:*mut c_void,scope:u32,providers:Vec<Box<Provider>>}
 impl Manager {
-    /// 创建截图管理器。`hwnd` 为目标窗口句柄（0 = 无窗口，内置前台方式不可用）；
-    /// `methods` 为内置方式位掩码。
-    pub fn new(hwnd: usize, methods: u64) -> Self {
-        let handle = unsafe { MaaWSManagerCreate(hwnd as *mut c_void, methods) };
-        assert!(!handle.is_null(), "MaaWSManagerCreate failed");
-        Manager { handle, callbacks: Vec::new() }
+    pub fn new(target:Target,methods:u64)->Result<Self,String>{
+        if !cfg!(all(target_os="windows",target_arch="x86_64")){return Err("Rust binding runtime supports Windows x64".into());}
+        if unsafe{MaaWSGetAbiVersion()}!=2{return Err("maa-capture binding requires ABI 2".into());}
+        let scope=target.0.scope;
+        let options=MaaWSCaptureOptions{struct_size:size_of::<MaaWSCaptureOptions>() as u32,reserved:0,target:target.0,methods};
+        let mut e:MaaWSError=zero();e.struct_size=size_of::<MaaWSError>() as u32;
+        let h=unsafe{MaaWSManagerCreate(&options,&mut e)};
+        if h.is_null(){return Err(String::from_utf8_lossy(&e.message).trim_end_matches('\0').into());}
+        Ok(Self{handle:h,scope,providers:Vec::new()})
     }
-
-    /// 注册外部自定义截图单元。
-    ///
-    /// `callbacks.screencap` 必须提供；`trans_arg` 原样透传给回调，
-    /// 其生命周期由调用方管理（Manager 不负责释放）。
-    pub fn register_custom_unit(&mut self, name: &str, callbacks: ScreencapCallbacks, trans_arg: *mut c_void) -> bool {
-        assert!(callbacks.screencap.is_some(), "screencap callback is required");
-
-        // Box 固定地址：C 侧保存该指针并在后续调用（connect/screencap 时）
-        let boxed = Box::into_raw(Box::new(callbacks));
-        let name_c = match std::ffi::CString::new(name) {
-            Ok(s) => s,
-            Err(_) => {
-                unsafe { drop(Box::from_raw(boxed)) };
-                return false;
-            }
-        };
-
-        let ok = unsafe { MaaWSManagerRegisterCustomUnit(self.handle, name_c.as_ptr(), boxed, trans_arg) != 0 };
-        if ok {
-            self.callbacks.push(boxed);
-            true
-        } else {
-            unsafe { drop(Box::from_raw(boxed)) };
-            false
-        }
+    fn require(&self)->*mut c_void{assert!(!self.handle.is_null(),"Manager is closed");self.handle}
+    pub fn connect(&mut self)->bool{unsafe{MaaWSManagerConnect(self.require())!=0}}
+    pub fn register_custom(&mut self,key:&str,callback:impl FnMut()->Option<CaptureFrame>+'static,stop:impl FnMut()+'static)->Result<bool,String>{
+        let key=CString::new(key).map_err(|e|e.to_string())?;
+        let mut p=Box::new(Provider{capture:Box::new(callback),frame:None,inactive:Box::new(stop)});
+        let callbacks=Callbacks{size:size_of::<Callbacks>() as u32,reserved:0,connect:None,capture,release,inactive};
+        let ok=unsafe{MaaWSManagerRegisterCustomUnit(self.require(),key.as_ptr(),self.scope,0,&callbacks,(&mut *p) as *mut Provider as *mut c_void)!=0};
+        if ok{self.providers.push(p);}Ok(ok)
     }
-
-    /// 连接并测速选择最快截图方式。
-    pub fn connect(&self) -> bool {
-        unsafe { MaaWSManagerConnect(self.handle) != 0 }
+    pub fn screencap(&mut self)->Option<CaptureFrame>{
+        let mut f=ptr::null_mut();if unsafe{MaaWSManagerScreencap(self.require(),&mut f)}==0{return None;}
+        struct Frame(*mut c_void);impl Drop for Frame{fn drop(&mut self){unsafe{MaaWSFrameDestroy(self.0)}}}
+        let guard=Frame(f);let mut i:MaaWSImageView=zero();i.struct_size=size_of::<MaaWSImageView>() as u32;
+        let mut source:MaaWSFrameInfo=zero();source.struct_size=size_of::<MaaWSFrameInfo>() as u32;
+        if unsafe{MaaWSFrameGetImage(guard.0,&mut i)==0||MaaWSFrameGetInfo(guard.0,&mut source)==0}{return None;}
+        let length=usize::try_from(i.data_size).ok()?;
+        let data=unsafe{std::slice::from_raw_parts(i.data as *const u8,length)}.to_vec();
+        Some(CaptureFrame{data,width:i.width,height:i.height,channels:i.channels,step:i.step,source})
     }
-
-    /// 截图一次（BGR）。`data` 指向内部图像，需要持久数据请用 `to_bytes()`。
-    pub fn screencap(&self) -> Option<ImageBuffer> {
-        let mut out = ImageBuffer {
-            data: ptr::null_mut(),
-            width: 0,
-            height: 0,
-            channels: 0,
-            step: 0,
-        };
-        if unsafe { MaaWSManagerScreencap(self.handle, &mut out) != 0 } {
-            Some(out)
-        } else {
-            None
-        }
-    }
-
-    /// 当前选中的截图单元名（内置如 "GDI"，自定义为注册名）。
-    pub fn selected_unit_name(&self) -> Option<String> {
-        let p = unsafe { MaaWSManagerSelectedUnitName(self.handle) };
-        if p.is_null() {
-            return None;
-        }
-        unsafe { Some(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()) }
-    }
-
-    /// 释放资源 / 恢复窗口状态（伪最小化等）。
-    pub fn inactive(&self) {
-        unsafe { MaaWSManagerInactive(self.handle) };
-    }
+    pub fn last_error(&self)->MaaWSError{let mut e:MaaWSError=zero();e.struct_size=size_of::<MaaWSError>() as u32;unsafe{MaaWSManagerGetLastError(self.require(),&mut e)};e}
+    pub fn inactive(&mut self){unsafe{MaaWSManagerInactive(self.require())}}
+    pub fn close(&mut self){if !self.handle.is_null(){unsafe{MaaWSManagerDestroy(self.handle)};self.handle=ptr::null_mut();self.providers.clear();}}
 }
-
-impl Drop for Manager {
-    fn drop(&mut self) {
-        unsafe {
-            MaaWSManagerDestroy(self.handle);
-            for cb in &self.callbacks {
-                drop(Box::from_raw(*cb));
-            }
-        }
-        self.handle = ptr::null_mut();
-        self.callbacks.clear();
-    }
-}
+impl Drop for Manager{fn drop(&mut self){self.close();}}

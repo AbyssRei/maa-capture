@@ -4,7 +4,8 @@
   "description": "Node.js bindings for the maa-capture capture library",
   "main": "index.js",
   "scripts": {
-    "test": "node test.js"
+    "test": "node test.js",
+    "typecheck": "tsc --noEmit --strict --target es2020 --module commonjs --types node test-types.ts"
   },
   "keywords": [],
   "author": "",
@@ -17,5 +18,9 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/AbyssRei/maa-capture.git"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "@types/node": "^26.6.5"
   }
 }

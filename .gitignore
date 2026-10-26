@@ -1190,3 +1190,4 @@ http-client.private.env.json
 # Dependencies are resolved from upstream registries at build time.
 bindings/java/.deps/
 bindings/nodejs/package-lock.json
+!bindings/golang/go.mod

@@ -1,6 +1,9 @@
-//go:build !cgo
+//go:build windows && amd64 && !cgo
 
 package maa_capture
 
-// ReleaseCustomUnits 纯 Go 构建下为空操作（无已注册回调）
-func ReleaseCustomUnits() {}
+import "errors"
+
+func (m *Manager) RegisterCustomUnit(key string, capture func() *CaptureFrame, inactive func()) error {
+	return errors.New("custom callbacks require CGO_ENABLED=1")
+}
